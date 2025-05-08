@@ -4,17 +4,17 @@ import ScreenShare from './components/ScreenShare.vue'
 
 <template>
   <div class="app-container">
-    <h1>屏幕共享应用</h1>
     <ScreenShare />
   </div>
 </template>
 
 <style scoped>
 .app-container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
-  text-align: center;
+  width: 100%;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 h1 {

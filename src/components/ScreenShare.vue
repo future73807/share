@@ -2,7 +2,7 @@
   <div class="screen-share-container">
     <!-- 加入房间表单 -->
     <div v-if="!isInRoom" class="join-form">
-      <h2>视频会议</h2>
+      <h2>屏幕共享</h2>
       <div class="form-group">
         <input 
           v-model="roomId" 
@@ -28,10 +28,33 @@
 
     <!-- 会议室内容 -->
     <div v-else class="meeting-room">
-      <div class="meeting-header">
+      <!-- 视频显示区域 -->
+      <div class="main-content">
+        <div class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
+          <video
+            ref="screenVideo"
+            autoplay
+            playsinline
+            :class="{ 'hidden': !isSharing && !isViewing }"
+          ></video>
+          <div class="video-overlay" v-if="!isSharing && !isViewing">
+            <span class="no-video-text">等待屏幕共享...</span>
+          </div>
+        </div>
+
+        <!-- 用户列表 -->
+        <div class="users-list">
+          <div v-for="user in users" :key="user.socketId" class="user-avatar">
+            <span class="avatar">{{ user.nickname.charAt(0) }}</span>
+            <span class="name">{{ user.nickname }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部工具栏 -->
+      <div class="bottom-toolbar">
         <div class="room-info">
           <h3>会议室: {{ roomId }}</h3>
-          <p class="participant">{{ nickname }}</p>
         </div>
         <div class="meeting-controls">
           <button 
@@ -56,21 +79,6 @@
           </button>
         </div>
       </div>
-
-      <!-- 视频显示区域 -->
-      <div class="video-grid">
-        <div class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
-          <video
-            ref="screenVideo"
-            autoplay
-            playsinline
-            :class="{ 'hidden': !isSharing && !isViewing }"
-          ></video>
-          <div class="video-overlay" v-if="!isSharing && !isViewing">
-            <span class="no-video-text">等待屏幕共享...</span>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -86,6 +94,7 @@ const isInRoom = ref(false)
 const isSharing = ref(false)
 const isViewing = ref(false)
 const screenVideo = ref(null)
+const users = ref([])
 
 // WebRTC 相关变量
 let socket = null
@@ -94,14 +103,23 @@ let peerConnections = new Map()
 
 // 初始化 Socket.IO 连接
 const initializeSocket = () => {
-  socket = io('http://localhost:3000')
+  // 使用当前域名作为服务器地址
+  socket = io(window.location.origin)
 
   socket.on('connect', () => {
     console.log('Connected to server')
   })
 
+  socket.on('room-users', (data) => {
+    users.value = data.users
+  })
+
   socket.on('user-joined', async (data) => {
     console.log(`${data.nickname} joined the room`)
+    users.value.push({
+      socketId: data.socketId,
+      nickname: data.nickname
+    })
     if (isSharing.value) {
       const peerConnection = createPeerConnection(data.socketId)
       try {
@@ -156,12 +174,14 @@ const initializeSocket = () => {
     }
   })
 
-  socket.on('user-left', (socketId) => {
-    const peerConnection = peerConnections.get(socketId)
+  socket.on('user-left', (data) => {
+    const peerConnection = peerConnections.get(data.socketId)
     if (peerConnection) {
       peerConnection.close()
-      peerConnections.delete(socketId)
+      peerConnections.delete(data.socketId)
     }
+    // 从用户列表中移除离开的用户
+    users.value = users.value.filter(user => user.socketId !== data.socketId)
   })
 }
 
@@ -354,39 +374,73 @@ onUnmounted(() => {
 .meeting-room {
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  height: calc(100vh - 40px);
+  height: 100vh;
+  position: relative;
 }
 
-.meeting-header {
+.main-content {
+  display: flex;
+  flex: 1;
+  position: relative;
+}
+
+.video-container {
+  flex: 1;
+  position: relative;
+  background: #000;
+}
+
+.users-list {
+  width: 200px;
+  background: #f8f9fa;
+  padding: 16px;
+  border-left: 1px solid #e9ecef;
+  overflow-y: auto;
+}
+
+.user-avatar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  background: #2196F3;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+}
+
+.name {
+  font-size: 0.9rem;
+  color: #495057;
+}
+
+.bottom-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  background-color: white;
-  border-radius: 12px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid #e9ecef;
 }
 
 .room-info {
   display: flex;
   align-items: center;
-  gap: 16px;
 }
 
 .room-info h3 {
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   color: #2c3e50;
   margin: 0;
-}
-
-.participant {
-  color: #666;
-  margin: 0;
-  padding: 4px 12px;
-  background-color: #f1f1f1;
-  border-radius: 16px;
-  font-size: 0.9rem;
 }
 
 .meeting-controls {
