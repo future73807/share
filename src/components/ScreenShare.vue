@@ -98,6 +98,8 @@ const initializeSocket = () => {
   // 使用当前域名作为服务器地址
   //服务器
   socket = io("https://share-api.future-you.top")
+  //备用服务器
+  socket = io("https://share-api-bak.future-you.top")
   //本地
   //socket = io("http://localhost:3000")
   socket.on('connect', () => {
@@ -253,25 +255,34 @@ const leaveRoom = async () => {
 // 开始屏幕共享
 const startSharing = async () => {
   try {
-    console.log(navigator.mediaDevices)
+    // 判断是否支持 getDisplayMedia
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      alert('当前浏览器不支持屏幕共享功能，请使用支持的浏览器（如最新版Chrome、Edge、部分安卓浏览器）。')
+      return
+    }
+    // 移动端兼容性提示
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+    if (isMobile) {
+      // 部分安卓浏览器支持，iOS大部分不支持
+      if (!navigator.mediaDevices.getDisplayMedia) {
+        alert('移动端浏览器暂不支持屏幕共享，请在PC端或支持的安卓浏览器中使用。')
+        return
+      }
+    }
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio: true
     })
-
     if (screenVideo.value) {
       screenVideo.value.srcObject = localStream
     }
-
     localStream.getVideoTracks()[0].onended = () => {
       stopSharing()
     }
-
     isSharing.value = true
-
-    // 为房间中的每个用户创建对等连接
     socket.emit('start-sharing')
   } catch (error) {
+    alert('屏幕共享启动失败：' + error.message)
     console.error('Error starting screen share:', error)
   }
 }
