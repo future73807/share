@@ -4,23 +4,9 @@
     <div v-if="!isInRoom" class="join-form">
       <h2>屏幕共享</h2>
       <div class="form-group">
-        <input 
-          v-model="roomId" 
-          type="text" 
-          placeholder="输入房间号"
-          class="input-field"
-        >
-        <input 
-          v-model="nickname" 
-          type="text" 
-          placeholder="输入昵称"
-          class="input-field"
-        >
-        <button 
-          @click="joinRoom"
-          class="join-button"
-          :disabled="!roomId || !nickname"
-        >
+        <input v-model="roomId" type="text" placeholder="输入房间号" class="input-field">
+        <input v-model="nickname" type="text" placeholder="输入昵称" class="input-field">
+        <button @click="joinRoom" class="join-button" :disabled="!roomId || !nickname">
           加入会议
         </button>
       </div>
@@ -31,12 +17,7 @@
       <!-- 视频显示区域 -->
       <div class="main-content">
         <div class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
-          <video
-            ref="screenVideo"
-            autoplay
-            playsinline
-            :class="{ 'hidden': !isSharing && !isViewing }"
-          ></video>
+          <video ref="screenVideo" autoplay playsinline :class="{ 'hidden': !isSharing && !isViewing }"></video>
           <div class="video-overlay" v-if="!isSharing && !isViewing">
             <span class="no-video-text">等待屏幕共享...</span>
           </div>
@@ -57,19 +38,11 @@
           <h3>会议室: {{ roomId }}</h3>
         </div>
         <div class="meeting-controls">
-          <button 
-            v-if="!isSharing" 
-            @click="startSharing"
-            class="control-button share"
-          >
+          <button v-if="!isSharing" @click="startSharing" class="control-button share">
             <span class="icon">📤</span>
             分享屏幕
           </button>
-          <button 
-            v-else 
-            @click="stopSharing"
-            class="control-button stop"
-          >
+          <button v-else @click="stopSharing" class="control-button stop">
             <span class="icon">⏹</span>
             停止共享
           </button>
@@ -104,7 +77,11 @@ let peerConnections = new Map()
 // 初始化 Socket.IO 连接
 const initializeSocket = () => {
   // 使用当前域名作为服务器地址
-  socket = io(window.location.origin)
+  // 获取当前URL的origin
+  var origin = window.location.origin;
+  // 移除端口号
+  var originWithoutPort = origin.replace(/:\d+$/, '');
+  socket = io(originWithoutPort+":3000")
 
   socket.on('connect', () => {
     console.log('Connected to server')
@@ -180,6 +157,17 @@ const initializeSocket = () => {
       peerConnection.close()
       peerConnections.delete(data.socketId)
     }
+
+    // 检查离开的用户是否是共享者
+    const leavingUser = users.value.find(user => user.socketId === data.socketId)
+    if (leavingUser && isViewing.value) {
+      // 如果正在观看离开用户的共享，重置观看状态
+      isViewing.value = false
+      if (screenVideo.value) {
+        screenVideo.value.srcObject = null
+      }
+    }
+
     // 从用户列表中移除离开的用户
     users.value = users.value.filter(user => user.socketId !== data.socketId)
   })
@@ -243,6 +231,7 @@ const leaveRoom = async () => {
 // 开始屏幕共享
 const startSharing = async () => {
   try {
+    console.log(navigator.mediaDevices)
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio: true
@@ -499,7 +488,7 @@ onUnmounted(() => {
   padding: 24px;
   background-color: white;
   border-radius: 12px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .video-container {
@@ -509,7 +498,7 @@ onUnmounted(() => {
   background-color: #f8f9fa;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .video-container.is-sharing {
