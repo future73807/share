@@ -6,7 +6,7 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
@@ -28,7 +28,19 @@ io.on('connection', (socket) => {
     }
     rooms.get(roomId).set(socket.id, { nickname });
 
-    // 通知房间内其他用户
+    // 获取当前房间的所有用户信息
+    const roomUsers = Array.from(rooms.get(roomId).entries()).map(([id, user]) => ({
+      socketId: id,
+      nickname: user.nickname
+    }));
+
+    // 通知新用户当前房间的所有用户信息
+    socket.emit('room-users', {
+      users: roomUsers,
+      sharingUsers: Array.from(sharingUsers.get(roomId) || [])
+    });
+
+    // 通知房间内其他用户有新用户加入
     socket.to(roomId).emit('user-joined', {
       socketId: socket.id,
       nickname
@@ -125,7 +137,8 @@ io.on('connection', (socket) => {
   });
 });
 
+// 监听所有网络接口
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`服务器运行在端口 ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`服务器运行在 http://0.0.0.0:${PORT}`);
 });
