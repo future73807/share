@@ -18,6 +18,9 @@
       <div class="main-content">
         <div class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
           <video ref="screenVideo" autoplay playsinline :class="{ 'hidden': !isSharing && !isViewing }"></video>
+          <button v-if="isSharing || isViewing" class="fullscreen-btn" @click="enterFullscreen">
+            <span class="icon">⛶</span> 全屏
+          </button>
           <div class="video-overlay" v-if="!isSharing && !isViewing">
             <span class="no-video-text">等待屏幕共享...</span>
           </div>
@@ -61,13 +64,29 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { io } from 'socket.io-client'
 
 // 状态变量
-const roomId = ref('')
-const nickname = ref('')
+const roomId = ref(localStorage.getItem('roomId') || '')
+const nickname = ref(localStorage.getItem('nickname') || '')
 const isInRoom = ref(false)
 const isSharing = ref(false)
 const isViewing = ref(false)
 const screenVideo = ref(null)
 const users = ref([])
+
+// 全屏功能
+const enterFullscreen = () => {
+  const videoEl = screenVideo.value
+  if (videoEl) {
+    if (videoEl.requestFullscreen) {
+      videoEl.requestFullscreen()
+    } else if (videoEl.webkitRequestFullscreen) {
+      videoEl.webkitRequestFullscreen()
+    } else if (videoEl.mozRequestFullScreen) {
+      videoEl.mozRequestFullScreen()
+    } else if (videoEl.msRequestFullscreen) {
+      videoEl.msRequestFullscreen()
+    }
+  }
+}
 
 // WebRTC 相关变量
 let socket = null
@@ -77,12 +96,10 @@ let peerConnections = new Map()
 // 初始化 Socket.IO 连接
 const initializeSocket = () => {
   // 使用当前域名作为服务器地址
-  // 获取当前URL的origin
-  var origin = window.location.origin;
-  // 移除端口号
-  var originWithoutPort = origin.replace(/:\d+$/, '');
-  socket = io(originWithoutPort+":3000")
-
+  //服务器
+  socket = io("https://share-api.future-you.top")
+  //本地
+  //socket = io("http://localhost:3000")
   socket.on('connect', () => {
     console.log('Connected to server')
   })
@@ -208,6 +225,8 @@ const createPeerConnection = (socketId) => {
 // 加入房间
 const joinRoom = () => {
   if (roomId.value && nickname.value) {
+    localStorage.setItem('roomId', roomId.value)
+    localStorage.setItem('nickname', nickname.value)
     socket.emit('join-room', {
       roomId: roomId.value,
       nickname: nickname.value
@@ -226,6 +245,9 @@ const leaveRoom = async () => {
   isViewing.value = false
   roomId.value = ''
   nickname.value = ''
+  // 清除localStorage
+  localStorage.removeItem('roomId')
+  localStorage.removeItem('nickname')
 }
 
 // 开始屏幕共享
@@ -277,6 +299,14 @@ const stopSharing = async () => {
 // 组件挂载时初始化 Socket 连接
 onMounted(() => {
   initializeSocket()
+  // 自动重连
+  const savedRoomId = localStorage.getItem('roomId')
+  const savedNickname = localStorage.getItem('nickname')
+  if (savedRoomId && savedNickname) {
+    roomId.value = savedRoomId
+    nickname.value = savedNickname
+    joinRoom()
+  }
 })
 
 // 组件卸载时清理资源
@@ -530,5 +560,50 @@ video {
 
 .hidden {
   display: none;
+}
+
+.fullscreen-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  background: rgba(33, 150, 243, 0.85);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.fullscreen-btn:hover {
+  background: #1976D2;
+}
+
+@media (max-width: 800px) {
+  .main-content {
+    flex-direction: column;
+  }
+  .video-container {
+    width: 100% !important;
+    max-width: 100vw;
+    aspect-ratio: 16/9;
+    margin-bottom: 16px;
+  }
+  .users-list {
+    width: 100% !important;
+    border-left: none;
+    border-top: 1px solid #e9ecef;
+    padding: 12px 8px;
+    flex-direction: row;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+  .user-avatar {
+    margin-bottom: 0;
+    margin-right: 12px;
+  }
 }
 </style>
