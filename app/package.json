@@ -1,0 +1,20 @@
+{
+  "name": "screen-share-uni-app",
+  "version": "1.0.0",
+  "description": "屏幕共享应用的uni-app版本",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "uni-app",
+    "screen-share",
+    "webrtc"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@hyoga/uni-socket.io": "^2.0.3",
+    "screen-share-uni-app": "file:"
+  }
+}
