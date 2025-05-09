@@ -1,0 +1,427 @@
+<template>
+	<view class="screen-share-container">
+		<!-- 加入房间表单 -->
+		<view v-if="!isInRoom" class="join-form">
+			<text class="title">屏幕共享</text>
+			<view class="form-group">
+				<input v-model="roomId" type="text" placeholder="输入房间号" class="input-field" />
+				<input v-model="nickname" type="text" placeholder="输入昵称" class="input-field" />
+				<button @click="joinRoom" class="join-button" :disabled="!roomId || !nickname">
+					加入会议
+				</button>
+			</view>
+		</view>
+
+		<!-- 会议室内容 -->
+		<view v-else class="meeting-room">
+			<!-- 视频显示区域 -->
+			<view class="main-content">
+				<view class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
+					<video ref="screenVideo" autoplay playsinline :class="{ 'hidden': !isSharing && !isViewing }"></video>
+					<button v-if="isSharing || isViewing" class="fullscreen-btn" @click="enterFullscreen">
+						<text class="icon">⛶</text> 全屏
+					</button>
+					<view class="video-overlay" v-if="!isSharing && !isViewing">
+						<text class="no-video-text">等待屏幕共享...</text>
+					</view>
+				</view>
+
+				<!-- 用户列表 -->
+				<view class="users-list">
+					<view v-for="user in users" :key="user.socketId" class="user-avatar">
+						<text class="avatar">{{ user.nickname.charAt(0) }}</text>
+						<text class="name">{{ user.nickname }}</text>
+					</view>
+				</view>
+			</view>
+
+			<!-- 底部工具栏 -->
+			<view class="bottom-toolbar">
+				<view class="room-info">
+					<text class="room-title">会议室: {{ roomId }}</text>
+				</view>
+				<view class="meeting-controls">
+					<button v-if="!isSharing" @click="startSharing" class="control-button share">
+						<text class="icon">📤</text>
+						分享屏幕
+					</button>
+					<button v-else @click="stopSharing" class="control-button stop">
+						<text class="icon">⏹</text>
+						停止共享
+					</button>
+					<button @click="leaveRoom" class="control-button leave">
+						<text class="icon">🚪</text>
+						离开会议
+					</button>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script>
+	import SocketService from '../../utils/socket.uts'
+
+	export default {
+		data() {
+			return {
+				roomId: uni.getStorageSync('roomId') || '',
+				nickname: uni.getStorageSync('nickname') || '',
+				isInRoom: false,
+				isSharing: false,
+				isViewing: false,
+				users: [] as Array<{ socketId: string; nickname: string }>,
+			}
+		},
+		onMounted() {
+			// 初始化连接
+			this.initializeSocket()
+		},
+		onBeforeUnmount() {
+			// 清理连接
+			this.cleanupConnections()
+		},
+		methods: {
+			// 全屏功能
+			enterFullscreen() {
+				const videoEl = this.$refs.screenVideo
+				if (videoEl) {
+					// 在uni-app中使用全屏API
+					uni.showToast({
+						title: '全屏功能在移动端使用系统全屏',
+						icon: 'none'
+					})
+				}
+			},
+			
+			// 初始化Socket连接
+			initializeSocket() {
+				// 获取SocketService实例
+				const socketService = SocketService.getInstance()
+				
+				// 连接WebSocket服务器
+				socketService.connect('ws://your-server-url')
+				
+				// 监听用户加入事件
+				socketService.on('user-joined', (data) => {
+					this.users.push(data)
+				})
+				
+				// 监听用户离开事件
+				socketService.on('user-left', (data) => {
+					this.users = this.users.filter(user => user.socketId !== data.socketId)
+				})
+				
+				// 监听房间用户列表事件
+				socketService.on('room-users', (data) => {
+					this.users = data.users
+				})
+			},
+			
+			// 加入房间
+			joinRoom() {
+				if (!this.roomId || !this.nickname) return
+				
+				// 保存到本地存储
+				uni.setStorageSync('roomId', this.roomId)
+				uni.setStorageSync('nickname', this.nickname)
+				
+				// 设置为已加入房间
+				this.isInRoom = true
+				
+				// 发送加入房间消息
+				const socketService = SocketService.getInstance()
+				socketService.send('join-room', {
+					roomId: this.roomId,
+					nickname: this.nickname
+				})
+				
+				uni.showToast({
+					title: '已加入房间: ' + this.roomId,
+					icon: 'success'
+				})
+			},
+			
+			// 开始共享屏幕
+			startSharing() {
+				// 获取Android屏幕共享模块
+				// #ifdef APP-PLUS
+				const screenShare = uni.requireNativePlugin('ScreenShare');
+				// #endif
+				// 请求屏幕共享权限并启动
+				screenShare.startScreenCapture({
+					success: (result) => {
+						console.log('屏幕共享启动成功', result);
+						this.isSharing = true;
+						// 发送共享开始消息给其他用户
+						uni.sendSocketMessage({
+							data: JSON.stringify({ type: 'start-sharing' })
+						});
+					},
+					fail: (error) => {
+						console.error('屏幕共享启动失败', error);
+						uni.showToast({
+							title: '启动屏幕共享失败',
+							icon: 'none'
+						});
+					}
+				});
+			},
+			
+			// 停止共享
+			stopSharing() {
+				// 获取Android屏幕共享模块
+				// #ifdef APP-PLUS
+				const screenShare = uni.requireNativePlugin('ScreenShare');
+				// #endif
+				// 停止屏幕共享
+				screenShare.stopScreenCapture({
+					success: () => {
+						console.log('屏幕共享已停止');
+						this.isSharing = false;
+						// 发送共享停止消息给其他用户
+						uni.sendSocketMessage({
+							data: JSON.stringify({ type: 'stop-sharing' })
+						});
+					},
+					fail: (error) => {
+						console.error('停止屏幕共享失败', error);
+					}
+				});
+			},
+			
+			// 离开房间
+			leaveRoom() {
+				// 清理连接
+				this.cleanupConnections()
+				
+				// 重置状态
+				this.isInRoom = false
+				this.isSharing = false
+				this.isViewing = false
+				
+				uni.showToast({
+					title: '已离开房间',
+					icon: 'success'
+				})
+			},
+			
+			// 清理连接
+			cleanupConnections() {
+				// 关闭WebSocket连接
+				// 实际实现需要使用uni.closeSocket
+			}
+		}
+	}
+</script>
+
+<style>
+.screen-share-container {
+  width: 100%;
+  height: 100vh;
+}
+
+.join-form {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.title {
+  font-size: 24px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.form-group {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.input-field {
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 16px;
+}
+
+.join-button {
+  background-color: #2196F3;
+  color: white;
+  padding: 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  margin-top: 10px;
+}
+
+.meeting-room {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.video-container {
+  flex: 1;
+  background-color: #f0f0f0;
+  position: relative;
+  overflow: hidden;
+}
+
+.video-container.is-sharing {
+  background-color: #000;
+}
+
+.video-container video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.video-container video.hidden {
+  display: none;
+}
+
+.fullscreen-btn {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.video-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.no-video-text {
+  font-size: 18px;
+  color: #666;
+}
+
+.users-list {
+  display: flex;
+  padding: 10px;
+  background-color: #f8f8f8;
+  overflow-x: auto;
+}
+
+.user-avatar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-right: 15px;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  background-color: #4CAF50;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  margin-bottom: 5px;
+}
+
+.name {
+  font-size: 12px;
+  max-width: 60px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottom-toolbar {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  background-color: #f8f8f8;
+  border-top: 1px solid #ddd;
+}
+
+.room-info {
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.room-title {
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.meeting-controls {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.control-button {
+  padding: 8px 15px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.control-button.share {
+  background-color: #2196F3;
+  color: white;
+}
+
+.control-button.share:hover {
+  background-color: #1976D2;
+}
+
+.control-button.stop {
+  background-color: #f44336;
+  color: white;
+}
+
+.control-button.stop:hover {
+  background-color: #d32f2f;
+}
+
+.control-button.leave {
+  background-color: #666;
+  color: white;
+}
+
+.control-button.leave:hover {
+  background-color: #555;
+}
+
+.icon {
+  font-size: 18px;
+}
+</style>

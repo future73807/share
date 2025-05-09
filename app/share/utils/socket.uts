@@ -1,0 +1,233 @@
+/**
+ * WebSocket连接工具类
+ * 用于替代Socket.io，实现在uni-app中的实时通信
+ */
+
+// 连接状态枚举
+enum ConnectionState {
+	DISCONNECTED = 0,
+	CONNECTING = 1,
+	CONNECTED = 2
+}
+
+// 事件类型
+interface EventCallback {
+	(data: any): void
+}
+
+// Socket工具类
+export default class SocketService {
+	// 单例模式
+	private static instance: SocketService | null = null
+	
+	// WebSocket实例
+	private socketTask: UniNamespace.SocketTask | null = null
+	
+	// 连接状态
+	private connectionState: ConnectionState = ConnectionState.DISCONNECTED
+	
+	// 重连次数
+	private reconnectCount: number = 0
+	
+	// 最大重连次数
+	private readonly MAX_RECONNECT_COUNT: number = 5
+	
+	// 事件监听器
+	private eventListeners: Map<string, Array<EventCallback>> = new Map()
+	
+	// 服务器地址
+	private url: string = 'https://share-api-bak.future-you.top'
+	
+	// 获取单例
+	public static getInstance(): SocketService {
+		if (!this.instance) {
+			this.instance = new SocketService()
+		}
+		return this.instance
+	}
+	
+	// 私有构造函数
+	private constructor() {}
+	
+	// 连接服务器
+	public connect(url: string): void {
+		if (this.connectionState !== ConnectionState.DISCONNECTED) {
+			return
+		}
+		
+		this.url = url
+		this.connectionState = ConnectionState.CONNECTING
+		
+		try {
+			// 创建WebSocket连接
+			this.socketTask = uni.connectSocket({
+				url: this.url,
+				complete: () => {}
+			})
+			
+			// 监听连接打开
+			this.socketTask.onOpen(() => {
+				console.log('WebSocket连接已打开')
+				this.connectionState = ConnectionState.CONNECTED
+				this.reconnectCount = 0
+				
+				// 触发连接成功事件
+				this.emit('connect', null)
+			})
+			
+			// 监听消息
+			this.socketTask.onMessage((res) => {
+				try {
+					const message = JSON.parse(res.data as string)
+					const eventName = message.event
+					const eventData = message.data
+					
+					// 触发对应事件
+					this.emit(eventName, eventData)
+				} catch (error) {
+					console.error('解析消息失败:', error)
+				}
+			})
+			
+			// 监听关闭
+			this.socketTask.onClose(() => {
+				console.log('WebSocket连接已关闭')
+				this.connectionState = ConnectionState.DISCONNECTED
+				this.socketTask = null
+				
+				// 触发断开连接事件
+				this.emit('disconnect', null)
+				
+				// 尝试重连
+				this.reconnect()
+			})
+			
+			// 监听错误
+			this.socketTask.onError((error) => {
+				console.error('WebSocket连接错误:', error)
+				this.connectionState = ConnectionState.DISCONNECTED
+				this.socketTask = null
+				
+				// 触发错误事件
+				this.emit('error', error)
+				
+				// 尝试重连
+				this.reconnect()
+			})
+		} catch (error) {
+			console.error('创建WebSocket连接失败:', error)
+			this.connectionState = ConnectionState.DISCONNECTED
+			
+			// 尝试重连
+			this.reconnect()
+		}
+	}
+	
+	// 重连
+	private reconnect(): void {
+		if (this.reconnectCount >= this.MAX_RECONNECT_COUNT) {
+			console.log('达到最大重连次数，停止重连')
+			return
+		}
+		
+		this.reconnectCount++
+		console.log(`尝试第${this.reconnectCount}次重连...`)
+		
+		setTimeout(() => {
+			this.connect(this.url)
+		}, 3000) // 3秒后重连
+	}
+	
+	// 关闭连接
+	public disconnect(): void {
+		if (this.socketTask && this.connectionState === ConnectionState.CONNECTED) {
+			this.socketTask.close({
+				success: () => {
+					console.log('WebSocket连接已手动关闭')
+				},
+				fail: (error) => {
+					console.error('关闭WebSocket连接失败:', error)
+				}
+			})
+		}
+	}
+	
+	// 发送消息
+	public send(event: string, data: any): void {
+		if (this.socketTask && this.connectionState === ConnectionState.CONNECTED) {
+			const message = JSON.stringify({
+				event: event,
+				data: data
+			})
+			
+			this.socketTask.send({
+				data: message,
+				success: () => {
+					console.log(`消息已发送: ${event}`)
+				},
+				fail: (error) => {
+					console.error(`发送消息失败: ${event}`, error)
+				}
+			})
+		} else {
+			console.error('WebSocket未连接，无法发送消息')
+		}
+	}
+	
+	// 监听事件
+	public on(event: string, callback: EventCallback): void {
+		if (!this.eventListeners.has(event)) {
+			this.eventListeners.set(event, [])
+		}
+		
+		this.eventListeners.get(event)?.push(callback)
+	}
+	
+	// 移除事件监听
+	public off(event: string, callback?: EventCallback): void {
+		if (!this.eventListeners.has(event)) {
+			return
+		}
+		
+		if (!callback) {
+			// 移除所有该事件的监听器
+			this.eventListeners.delete(event)
+		} else {
+			// 移除特定的监听器
+			const listeners = this.eventListeners.get(event)
+			if (listeners) {
+				const index = listeners.indexOf(callback)
+				if (index !== -1) {
+					listeners.splice(index, 1)
+				}
+				
+				if (listeners.length === 0) {
+					this.eventListeners.delete(event)
+				}
+			}
+		}
+	}
+	
+	// 触发事件
+	private emit(event: string, data: any): void {
+		if (!this.eventListeners.has(event)) {
+			return
+		}
+		
+		const listeners = this.eventListeners.get(event)
+		if (listeners) {
+			for (const callback of listeners) {
+				try {
+					callback(data)
+				} catch (error) {
+					console.error(`执行事件监听器失败: ${event}`, error)
+				}
+			}
+		}
+	}
+	
+	// 获取连接状态
+	public isConnected(): boolean {
+		return this.connectionState === ConnectionState.CONNECTED
+	}
+}

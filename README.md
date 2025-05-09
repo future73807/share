@@ -85,6 +85,13 @@ npm run build
    - 确保后端服务器正常运行并可访问
    - 根据实际部署环境修改前端连接地址
 
+## 配置证书
+
+生成证书
+```bash
+keytool -genkey -alias testalias -keyalg RSA -keysize 2048 -validity 36500 -keystore future.keystore
+```
+
 ## 使用说明
 
 1. 打开应用后，输入房间号和昵称加入会议
