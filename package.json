@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@hyoga/uni-socket.io": "^3.0.4",
     "@vueuse/core": "^13.1.0",
     "express": "^5.1.0",
     "share": "file:",
