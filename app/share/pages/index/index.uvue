@@ -100,7 +100,7 @@
 				const socketService = SocketService.getInstance()
 				
 				// 连接WebSocket服务器
-				socketService.connect('ws://your-server-url')
+				socketService.connect('https://share-api-bak.future-you.top/socket.io/?EIO=4&transport=websocket')
 				
 				// 监听用户加入事件
 				socketService.on('user-joined', (data) => {
