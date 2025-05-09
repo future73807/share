@@ -17,7 +17,7 @@
 			<!-- 视频显示区域 -->
 			<view class="main-content">
 				<view class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
-					<video ref="screenVideo" autoplay playsinline :class="{ 'hidden': !isSharing && !isViewing }"></video>
+					<video ref="screenVideo" autoplay playsinline :class="['screen-video', { 'hidden': !isSharing && !isViewing }]" />
 					<button v-if="isSharing || isViewing" class="fullscreen-btn" @click="enterFullscreen">
 						<text class="icon">⛶</text> 全屏
 					</button>
@@ -60,7 +60,7 @@
 </template>
 
 <script>
-	import SocketService from '../../utils/socket.uts'
+	import { io } from 'socket.io-client'
 
 	export default {
 		data() {
@@ -96,50 +96,40 @@
 			
 			// 初始化Socket连接
 			initializeSocket() {
-				// 获取SocketService实例
-				const socketService = SocketService.getInstance()
-				
-				// 连接WebSocket服务器
-				socketService.connect('https://share-api-bak.future-you.top/socket.io/?EIO=4&transport=websocket')
-				
-				// 监听用户加入事件
-				socketService.on('user-joined', (data) => {
+				this.socket = io('https://share-api-bak.future-you.top')
+				this.socket.on('user-joined', (data) => {
 					this.users.push(data)
 				})
-				
-				// 监听用户离开事件
-				socketService.on('user-left', (data) => {
+				this.socket.on('user-left', (data) => {
 					this.users = this.users.filter(user => user.socketId !== data.socketId)
 				})
-				
-				// 监听房间用户列表事件
-				socketService.on('room-users', (data) => {
+				this.socket.on('room-users', (data) => {
 					this.users = data.users
 				})
 			},
-			
 			// 加入房间
 			joinRoom() {
 				if (!this.roomId || !this.nickname) return
-				
-				// 保存到本地存储
 				uni.setStorageSync('roomId', this.roomId)
 				uni.setStorageSync('nickname', this.nickname)
-				
-				// 设置为已加入房间
 				this.isInRoom = true
-				
-				// 发送加入房间消息
-				const socketService = SocketService.getInstance()
-				socketService.send('join-room', {
-					roomId: this.roomId,
-					nickname: this.nickname
-				})
-				
+				if (this.socket) {
+					this.socket.emit('join-room', {
+						roomId: this.roomId,
+						nickname: this.nickname
+					})
+				}
 				uni.showToast({
 					title: '已加入房间: ' + this.roomId,
 					icon: 'success'
 				})
+			},
+			// 清理连接
+			cleanupConnections() {
+				if (this.socket) {
+					this.socket.disconnect()
+					this.socket = null
+				}
 			},
 			
 			// 开始共享屏幕
@@ -218,7 +208,7 @@
 <style>
 .screen-share-container {
   width: 100%;
-  height: 100vh;
+  height: 100%;
 }
 
 .join-form {
@@ -241,7 +231,6 @@
   max-width: 400px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
 .input-field {
@@ -249,6 +238,7 @@
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 16px;
+  margin-bottom: 10px;
 }
 
 .join-button {
@@ -257,7 +247,6 @@
   padding: 12px;
   border: none;
   border-radius: 4px;
-  cursor: pointer;
   font-size: 16px;
   margin-top: 10px;
 }
@@ -285,13 +274,13 @@
   background-color: #000;
 }
 
-.video-container video {
+.screen-video {
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
 
-.video-container video.hidden {
+.screen-video.hidden {
   display: none;
 }
 
@@ -304,7 +293,6 @@
   border: none;
   border-radius: 4px;
   padding: 5px 10px;
-  cursor: pointer;
   z-index: 10;
 }
 
@@ -328,7 +316,6 @@
   display: flex;
   padding: 10px;
   background-color: #f8f8f8;
-  overflow-x: auto;
 }
 
 .user-avatar {
@@ -343,7 +330,7 @@
   height: 40px;
   background-color: #4CAF50;
   color: white;
-  border-radius: 50%;
+  border-radius: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -381,17 +368,14 @@
 .meeting-controls {
   display: flex;
   justify-content: center;
-  gap: 10px;
 }
 
 .control-button {
   padding: 8px 15px;
   border-radius: 4px;
   border: none;
-  cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 5px;
 }
 
 .control-button.share {
@@ -399,7 +383,7 @@
   color: white;
 }
 
-.control-button.share:hover {
+.control-button.share:active {
   background-color: #1976D2;
 }
 
@@ -408,7 +392,7 @@
   color: white;
 }
 
-.control-button.stop:hover {
+.control-button.stop:active {
   background-color: #d32f2f;
 }
 
@@ -417,7 +401,7 @@
   color: white;
 }
 
-.control-button.leave:hover {
+.control-button.leave:active {
   background-color: #555;
 }
 
