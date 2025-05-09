@@ -49,6 +49,10 @@
             <span class="icon">⏹</span>
             停止共享
           </button>
+          <button @click="toggleMic" class="control-button mic" :class="{ off: !isMicOn }">
+            <span class="icon">{{ isMicOn ? '🎤' : '🔇' }}</span>
+            {{ isMicOn ? '关闭麦克风' : '开启麦克风' }}
+          </button>
           <button @click="leaveRoom" class="control-button leave">
             <span class="icon">🚪</span>
             离开会议
@@ -71,6 +75,7 @@ const isSharing = ref(false)
 const isViewing = ref(false)
 const screenVideo = ref(null)
 const users = ref([])
+const isMicOn = ref(true)
 
 // 全屏功能
 const enterFullscreen = () => {
@@ -96,12 +101,12 @@ let peerConnections = new Map()
 // 初始化 Socket.IO 连接
 const initializeSocket = () => {
   // 使用当前域名作为服务器地址
-  //服务器
-  socket = io("https://share-api.future-you.top")
-  //备用服务器
+  // 服务器
+  // socket = io("https://share-api.future-you.top")
+  // 备用服务器
   socket = io("https://share-api-bak.future-you.top")
-  //本地
-  //socket = io("http://localhost:3000")
+  // 本地
+  // socket = io("http://localhost:3000")
   socket.on('connect', () => {
     console.log('Connected to server')
   })
@@ -253,28 +258,38 @@ const leaveRoom = async () => {
 }
 
 // 开始屏幕共享
+const getScreenStream = () => {
+  return new Promise((resolve, reject) => {
+    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+      navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+        .then(resolve)
+        .catch(reject)
+    } else {
+      reject(new Error('当前浏览器不支持屏幕共享功能'))
+    }
+  })
+}
+
+const toggleMic = () => {
+  if (localStream) {
+    const audioTracks = localStream.getAudioTracks()
+    if (audioTracks.length > 0) {
+      isMicOn.value = !isMicOn.value
+      audioTracks[0].enabled = isMicOn.value
+    }
+  }
+}
+
 const startSharing = async () => {
   try {
-    // 判断是否支持 getDisplayMedia
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      alert('当前浏览器不支持屏幕共享功能，请使用支持的浏览器（如最新版Chrome、Edge、部分安卓浏览器）。')
-      return
-    }
-    // 移动端兼容性提示
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-    if (isMobile) {
-      // 部分安卓浏览器支持，iOS大部分不支持
-      if (!navigator.mediaDevices.getDisplayMedia) {
-        alert('移动端浏览器暂不支持屏幕共享，请在PC端或支持的安卓浏览器中使用。')
-        return
-      }
-    }
-    localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: true
-    })
+    localStream = await getScreenStream()
     if (screenVideo.value) {
       screenVideo.value.srcObject = localStream
+    }
+    // 保证音频轨道状态与按钮同步
+    const audioTracks = localStream.getAudioTracks()
+    if (audioTracks.length > 0) {
+      audioTracks[0].enabled = isMicOn.value
     }
     localStream.getVideoTracks()[0].onended = () => {
       stopSharing()
@@ -616,5 +631,16 @@ video {
     margin-bottom: 0;
     margin-right: 12px;
   }
+}
+.control-button.mic {
+  background-color: #ff9800;
+  color: white;
+}
+.control-button.mic.off {
+  background-color: #bdbdbd;
+  color: #fff;
+}
+.control-button.mic:hover {
+  background-color: #f57c00;
 }
 </style>
