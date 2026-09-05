@@ -12,6 +12,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import com.cloudwebrtc.webrtc.FlutterWebRTCPlugin
@@ -22,20 +23,18 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * 屏幕共享原生插件(唯一处理 screen_share_channel,修复与 MainActivity 重复注册导致
- * 授权弹窗不显示的问题)。
+ * 屏幕共享原生插件(screen_share_channel 唯一处理器)。
  *
  * 职责:
- *  1. mediaProjection 前台服务生命周期(Android 14+ 要求 startForeground 之后才能
- *     getMediaProjection,否则确认授权后直接闪退 SecurityException);
- *  2. 系统内部声音采集(AudioPlaybackCapture),经 flutter_webrtc 的
- *     capturePostProcessing 注入 WebRTC 音频轨道,与麦克风按模式混音;
- *  3. 回声抑制:麦克风走 VOICE_COMMUNICATION 源(硬件 AEC),屏幕内音为纯数字采集,
- *     混音在采集后处理阶段完成,不引入扬声器二次采集。
+ *  1. mediaProjection 前台服务生命周期(Android 14+ 必须先 startForeground);
+ *  2. 声音内录(Android 10+ AudioPlaybackCapture):复用 flutter_webrtc 已授权的
+ *     投影实例采集系统内音,数据经 ScreenAudioMixProcessor 注入 WebRTC 上行;
+ *  3. 声音模式控制(透传/替换/叠加/置零)。
  */
 class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
@@ -43,27 +42,27 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private var activity: Activity? = null
     private var appContext: Context? = null
     private var projectionManager: MediaProjectionManager? = null
-
-    // 音频模式(none/mic/screen/mixed),由 Dart 侧设置
     private val mixProcessor = ScreenAudioMixProcessor()
-
-    // 系统音频采集状态
-    private var audioRecord: AudioRecord? = null
-    private var captureExecutor = Executors.newSingleThreadExecutor()
-    @Volatile private var capturing = false
-    private var ownProjection: MediaProjection? = null // 回退方案:插件自建的投影
-    private var projectionCallback: MediaProjection.Callback? = null
-
-    // 回退方案的用户授权回调
-    private var pendingConsentResult: Result? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    init {
+        audioBridge = mixProcessor
+    }
+
+    // 声音内录采集状态
+    private var audioRecord: AudioRecord? = null
+    private var captureExecutor: ExecutorService? = null
+    @Volatile private var audioCapturing = false
+    private var ownProjection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
+    private var pendingFallbackResult: Result? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(binding.binaryMessenger, CHANNEL_NAME)
         channel.setMethodCallHandler(this)
         appContext = binding.applicationContext
-        projectionManager =
-            appContext?.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+        projectionManager = appContext?.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+            as? MediaProjectionManager
         registerAudioProcessor()
     }
 
@@ -80,43 +79,41 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
-        binding.addActivityResultListener { requestCode, resultCode, data ->
-            onActivityResult(requestCode, resultCode, data)
-        }
     }
 
-    override fun onDetachedFromActivityForConfigChanges() { activity = null }
+    override fun onDetachedFromActivityForConfigChanges() {
+        activity = null
+    }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
         activity = binding.activity
-        binding.addActivityResultListener { requestCode, resultCode, data ->
-            onActivityResult(requestCode, resultCode, data)
-        }
     }
 
-    override fun onDetachedFromActivity() { activity = null }
+    override fun onDetachedFromActivity() {
+        activity = null
+    }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
             "startCaptureService" -> {
                 val ctx = appContext
                 if (ctx == null) {
-                    result.error("NO_CONTEXT", "application context is null", null)
+                    result.error("NO_CONTEXT", null, null)
                     return
                 }
-                val intent = Intent(ctx, ScreenCaptureService::class.java)
                 try {
+                    val intent = Intent(ctx, ScreenCaptureService::class.java)
+                        .setAction(ScreenCaptureService.ACTION_START)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         ctx.startForegroundService(intent)
                     } else {
                         ctx.startService(intent)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "startForegroundService failed", e)
+                    Log.e(TAG, "startForegroundService 失败", e)
                     mainHandler.post { result.success(false) }
                     return
                 }
-                // 等待服务完成 startForeground(Android 14+ 硬性要求)
                 Thread {
                     val ok = ScreenCaptureService.awaitForeground(3, TimeUnit.SECONDS)
                     mainHandler.post { result.success(ok) }
@@ -124,7 +121,12 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             }
             "stopCaptureService" -> {
                 val ctx = appContext
-                if (ctx != null) ctx.stopService(Intent(ctx, ScreenCaptureService::class.java))
+                if (ctx != null) {
+                    ctx.startService(
+                        Intent(ctx, ScreenCaptureService::class.java)
+                            .setAction(ScreenCaptureService.ACTION_STOP_AUDIO))
+                    ctx.stopService(Intent(ctx, ScreenCaptureService::class.java))
+                }
                 result.success(null)
             }
             "setAudioShareMode" -> {
@@ -134,16 +136,12 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     "mixed" -> ScreenAudioMixProcessor.MODE_MIXED
                     else -> ScreenAudioMixProcessor.MODE_MIC
                 }
+                Log.i(TAG, "声音模式 -> ${call.argument<String>("mode")}")
                 result.success(null)
-            }
-            "isSystemAudioCaptureSupported" -> {
-                result.success(
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && projectionManager != null
-                )
             }
             "startSystemAudioCapture" -> {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                    result.error("UNSUPPORTED", "AudioPlaybackCapture 需要 Android 10+", null)
+                    result.error("UNSUPPORTED", "声音内录需要 Android 10+", null)
                     return
                 }
                 val trackId = call.argument<String>("trackId") ?: ""
@@ -152,7 +150,8 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     startAudioCapture(projection, ownedByPlugin = false)
                     result.success(true)
                 } else {
-                    // 无法复用 flutter_webrtc 的投影时,走插件自建授权(第二次弹窗)
+                    // 无法复用 flutter_webrtc 的投影实例:由 Dart 侧触发
+                    // startAudioProjectionFallback(我们自己的系统授权)
                     result.error("NEED_PROJECTION", "需要单独的屏幕投影授权", null)
                 }
             }
@@ -163,7 +162,7 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.success(false)
                     return
                 }
-                pendingConsentResult = result
+                pendingFallbackResult = result
                 act.startActivityForResult(pm.createScreenCaptureIntent(), REQUEST_AUDIO_CONSENT)
             }
             "stopSystemAudioCapture" -> {
@@ -175,7 +174,6 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 result.success(null)
             }
             "getAudioMixLevel" -> {
-                // 供 UI 电平条轮询:outPeak=送入编码的音频峰值,captureWrites=屏幕内音采集累计样本
                 result.success(mapOf(
                     "outPeak" to mixProcessor.lastOutPeak,
                     "captureWrites" to mixProcessor.captureWrites,
@@ -192,40 +190,17 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
      *      -> getCapturerInfo(trackId).capturer -> mediaProjection 字段。
      */
     private fun findFlutterWebrtcProjection(trackId: String): MediaProjection? {
-        if (trackId.isEmpty()) {
-            Log.w(TAG, "复用投影失败: trackId 为空")
-            return null
-        }
+        if (trackId.isEmpty()) return null
         return try {
-            val singleton = FlutterWebRTCPlugin.sharedSingleton
-            if (singleton == null) {
-                Log.w(TAG, "复用投影失败: flutter_webrtc 插件未初始化")
-                return null
-            }
+            val singleton = FlutterWebRTCPlugin.sharedSingleton ?: return null
             val mch = singleton.javaClass.getDeclaredField("methodCallHandler")
-                .apply { isAccessible = true }.get(singleton)
-            if (mch == null) {
-                Log.w(TAG, "复用投影失败: methodCallHandler 为空")
-                return null
-            }
+                .apply { isAccessible = true }.get(singleton) ?: return null
             val gum = mch.javaClass.getDeclaredField("getUserMediaImpl")
-                .apply { isAccessible = true }.get(mch)
-            if (gum == null) {
-                Log.w(TAG, "复用投影失败: getUserMediaImpl 为空")
-                return null
-            }
+                .apply { isAccessible = true }.get(mch) ?: return null
             val info = gum.javaClass
                 .getMethod("getCapturerInfo", String::class.java)
-                .invoke(gum, trackId)
-            if (info == null) {
-                Log.w(TAG, "复用投影失败: 找不到轨道 $trackId 的采集信息")
-                return null
-            }
-            val capturer = info.javaClass.getField("capturer").get(info)
-            if (capturer == null) {
-                Log.w(TAG, "复用投影失败: capturer 为空")
-                return null
-            }
+                .invoke(gum, trackId) ?: return null
+            val capturer = info.javaClass.getField("capturer").get(info) ?: return null
             var c: Class<*>? = capturer.javaClass
             while (c != null) {
                 val f = try {
@@ -235,13 +210,10 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 }
                 if (f != null) {
                     f.isAccessible = true
-                    val mp = f.get(capturer) as? MediaProjection
-                    if (mp == null) Log.w(TAG, "复用投影失败: mediaProjection 字段为空")
-                    return mp
+                    return f.get(capturer) as? MediaProjection
                 }
                 c = c.superclass
             }
-            Log.w(TAG, "复用投影失败: ${capturer.javaClass.name} 无 mediaProjection 字段")
             null
         } catch (t: Throwable) {
             Log.w(TAG, "复用 flutter_webrtc MediaProjection 失败: ${t.message}")
@@ -251,13 +223,15 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     @SuppressLint("MissingPermission")
     private fun startAudioCapture(projection: MediaProjection, ownedByPlugin: Boolean) {
-        if (capturing) return
+        if (audioCapturing) return
         val ctx = appContext ?: return
 
         val playbackConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_GAME)
             .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+            .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+            .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
             .build()
 
         val format = AudioFormat.Builder()
@@ -278,7 +252,6 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             .setAudioPlaybackCaptureConfig(playbackConfig)
             .build()
 
-        // 投影被系统/用户停止时同步停止音频采集
         if (ownedByPlugin) {
             val cb = object : MediaProjection.Callback() {
                 override fun onStop() {
@@ -293,65 +266,60 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
 
         audioRecord = record
-        capturing = true
-        val recState = record.state
-        val started = record.startRecording()
-        val recStateAfter = record.recordingState
-        Log.i(TAG, "系统音频采集启动: AudioRecord.state=$recState($recStateAfter) " +
-                "rate=${ScreenAudioMixProcessor.SRC_SAMPLE_RATE} ownedByPlugin=$ownedByPlugin " +
-                "projectId=${projection.hashCode()}")
-        captureExecutor.execute {
+        audioCapturing = true
+        val st = record.startRecording()
+        Log.i(TAG, "系统音频采集启动: state=${record.state} recState=${record.recordingState} " +
+                "startRet=$st ownedByPlugin=$ownedByPlugin")
+
+        captureExecutor = Executors.newSingleThreadExecutor()
+        captureExecutor!!.execute {
             val buf = ShortArray(2048)
-            var readCalls = 0L
-            var totalSamples = 0L
+            var reads = 0L
+            var samples = 0L
             var lastLog = System.currentTimeMillis()
-            while (capturing) {
+            while (audioCapturing) {
                 val n = try {
                     record.read(buf, 0, buf.size)
                 } catch (t: Throwable) {
                     Log.e(TAG, "AudioRecord.read 异常", t)
                     break
                 }
-                totalSamples += if (n > 0) n.toLong() else 0
-                readCalls++
-                val now = System.currentTimeMillis()
-                if (now - lastLog >= 1000) {
-                    // 每秒一次:读调用数、累计样本、录制状态——静音/无数据时看这里定位
-                    Log.i(TAG, "音频采集: reads=$readCalls samples=$totalSamples " +
-                            "recState=${record.recordingState} lastRead=$n")
-                    lastLog = now
-                }
+                reads++
                 if (n > 0) {
+                    samples += n
                     mixProcessor.writeCaptureSamples(buf, n)
                 } else if (n < 0) {
                     Log.e(TAG, "AudioRecord.read 返回 $n,停止采集")
                     break
                 }
+                val now = System.currentTimeMillis()
+                if (now - lastLog >= 1000) {
+                    Log.i(TAG, "音频采集: reads=$reads samples=$samples " +
+                            "recState=${record.recordingState} lastRead=$n")
+                    lastLog = now
+                }
             }
-            Log.w(TAG, "系统音频采集线程退出 (capturing=$capturing)")
+            Log.w(TAG, "系统音频采集线程退出 (audioCapturing=$audioCapturing)")
             try { record.stop() } catch (_: Throwable) {}
             try { record.release() } catch (_: Throwable) {}
         }
     }
 
     private fun stopAudioCaptureInternal(releaseOwnProjection: Boolean) {
-        capturing = false
+        audioCapturing = false
         audioRecord = null
-        projectionCallback?.let { cb ->
-            ownProjection?.unregisterCallback(cb)
-        }
-        projectionCallback = null
         if (releaseOwnProjection) {
             try { ownProjection?.stop() } catch (_: Throwable) {}
             ownProjection = null
         }
         mixProcessor.ring.clear()
+        Log.i(TAG, "系统音频采集已停止 (releaseOwnProjection=$releaseOwnProjection)")
     }
 
     private fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
         if (requestCode != REQUEST_AUDIO_CONSENT) return false
-        val pending = pendingConsentResult
-        pendingConsentResult = null
+        val pending = pendingFallbackResult
+        pendingFallbackResult = null
         if (pending == null) return true
 
         if (resultCode == Activity.RESULT_OK && data != null && projectionManager != null) {
@@ -360,13 +328,12 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 try {
                     // 确保前台服务已就绪(Android 14+ getMediaProjection 前置条件)
                     ScreenCaptureService.awaitForeground(3, TimeUnit.SECONDS)
-                    val projection =
-                        projectionManager!!.getMediaProjection(resultCode, data)
+                    val projection = projectionManager!!.getMediaProjection(resultCode, data)
                     ownProjection = projection
                     startAudioCapture(projection, ownedByPlugin = true)
                     ok = true
                 } catch (t: Throwable) {
-                    Log.e(TAG, "getMediaProjection(音频回退)失败", t)
+                    Log.e(TAG, "音频回退投影创建失败", t)
                 }
                 val finalOk = ok
                 mainHandler.post { pending.success(finalOk) }
@@ -404,5 +371,15 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         private const val TAG = "ScreenSharePlugin"
         const val CHANNEL_NAME = "screen_share_channel"
         private const val REQUEST_AUDIO_CONSENT = 2002
+
+        /** 静态桥:前台服务采集线程经此把系统内音写入混音器 */
+        @JvmStatic
+        @Volatile
+        var audioBridge: ScreenAudioMixProcessor? = null
+
+        @JvmStatic
+        fun feedSystemAudio(buf: ShortArray, n: Int) {
+            audioBridge?.writeCaptureSamples(buf, n)
+        }
     }
 }

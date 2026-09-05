@@ -28,8 +28,9 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         const val MODE_SCREEN = 2
         const val MODE_MIXED = 3
 
-        // 系统音频采集采样率(源)
-        const val SRC_SAMPLE_RATE = 48000
+        // 系统音频采集采样率(源);16k 为 CSDN 实测兼容方案,
+        // 部分机型(MIUI 等)在 48k 下 AudioPlaybackCapture 只会采到静音
+        const val SRC_SAMPLE_RATE = 16000
 
         private const val RING_CAPACITY = SRC_SAMPLE_RATE * 2 // 2 秒
     }

@@ -36,25 +36,38 @@ def gradient(size):
 
 
 def draw_glyph(draw, s, k=1.0, color=WHITE):
-    """白色"显示器 + 向上箭头"图形。k 为整体缩放(1.0 铺满单位框)。"""
+    """白色图形:Material Icons `screen_share` 样式。
+    显示器(描边圆角矩形) + 底座,右上角两道弧形共享波纹 + 实心圆点。"""
     def u(x, y):
         off = s * (1 - k) / 2
         return (off + x * s * k, off + y * s * k)
 
-    stroke = max(1, int(0.05 * s * k))
-    # 显示器轮廓
-    draw.rounded_rectangle([u(0.20, 0.20), u(0.80, 0.62)],
-                           radius=0.06 * s * k, outline=color, width=stroke)
-    # 向上箭头(屏幕内)
-    draw.polygon([u(0.37, 0.46), u(0.63, 0.46), u(0.50, 0.285)], fill=color)
-    draw.rounded_rectangle([u(0.452, 0.46), u(0.548, 0.565)],
-                           radius=0.02 * s * k, fill=color)
-    # 支架与底座
-    draw.rounded_rectangle([u(0.44, 0.62), u(0.56, 0.71)],
-                           radius=0.02 * s * k, fill=color)
-    draw.rounded_rectangle([u(0.30, 0.71), u(0.70, 0.78)],
-                           radius=0.035 * s * k, fill=color)
+    sw = max(3, int(0.05 * s * k))
 
+    # ── 显示器主体:描边圆角矩形(0.16,0.24)-(0.84,0.74) ──
+    draw.rounded_rectangle([u(0.16, 0.24), u(0.84, 0.74)],
+                           radius=0.045 * s * k, outline=color, width=sw)
+
+    # ── 底座:竖颈 + 横条 ──
+    neck_w = 0.10 * s * k
+    draw.rounded_rectangle([u(0.5 - neck_w / 2 / s, 0.74),
+                            u(0.5 + neck_w / 2 / s, 0.84)],
+                           radius=0.015 * s * k, fill=color)
+    draw.rounded_rectangle([u(0.30, 0.84), u(0.70, 0.92)],
+                           radius=0.03 * s * k, fill=color)
+
+    # ── 右上角共享波纹:两段圆弧(圆心在显示器右上角内侧) ──
+    # Material screen_share 的波纹是从显示器右上角向外发散的两条弧
+    cx, cy = u(0.70, 0.30)
+    for rr_frac, w_frac in ((0.155, 0.035), (0.245, 0.045)):
+        rr = rr_frac * s * k
+        wd = max(3, int(w_frac * s * k))
+        # 弧从 -80° 到 10°(右上象限,向右上发散)
+        box = [cx - rr, cy - rr, cx + rr, cy + rr]
+        draw.arc(box, start=278, end=8, fill=color, width=wd)
+    # 波纹起点的小实心圆点
+    dot_r = 0.030 * s * k
+    draw.ellipse([cx - dot_r, cy - 2.2 * dot_r, cx + dot_r, cy], fill=color)
 
 def make_legacy(size):
     """完整方形图标(圆角),用于 API<26 启动器与 Web favicon。"""

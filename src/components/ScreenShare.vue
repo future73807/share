@@ -2,7 +2,19 @@
   <div class="screen-share-container">
     <!-- 加入房间 -->
     <div v-if="!isInRoom" class="join-wrap">
-      <div class="join-card">
+      <div class="join-layout">
+        <div class="join-hero">
+          <div class="hero-icon"><MonitorUp :size="42" /></div>
+          <h1 class="hero-title">屏幕共享</h1>
+          <p class="hero-sub">把手机或电脑屏幕,连同声音,实时分享给房间里的每一个人</p>
+          <ul class="hero-feats">
+            <li><MonitorSmartphone :size="17" /> 手机 / 电脑画面互通</li>
+            <li><AudioLines :size="17" /> 屏幕内音、麦克风、混合三种声音模式</li>
+            <li><AudioWaveform :size="17" /> 硬件级回声抑制</li>
+            <li><Wifi :size="17" /> 局域网直连,低延迟</li>
+          </ul>
+        </div>
+        <div class="join-card">
         <div class="brand-header">
           <div class="brand-icon"><MonitorUp :size="26" /></div>
           <div>
@@ -33,12 +45,13 @@
         <button class="join-button" :disabled="!roomId || !nickname || isJoining" @click="joinRoom">
           <Loader2 v-if="isJoining" :size="18" class="spin" />
           <Users v-else :size="18" />
-          {{ isJoining ? '连接中…' : '加入会议' }}
+          {{ isJoining ? '连接中…' : '加入房间' }}
         </button>
 
         <div v-if="joinError" class="error-pill">
           <AlertCircle :size="16" />
           <span>{{ joinError }}</span>
+        </div>
         </div>
       </div>
     </div>
@@ -697,13 +710,74 @@ onUnmounted(() => {
   justify-content: center;
   padding: 24px 16px;
 }
+.join-layout {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+}
 .join-card {
   width: 100%;
-  max-width: 400px;
   background: #fff;
   border-radius: 20px;
   padding: 28px 24px;
   box-shadow: 0 8px 30px rgba(15, 23, 42, 0.07);
+}
+/* 桌面:左右分栏,铺满利用宽度 */
+@media (min-width: 960px) {
+  .join-wrap {
+    padding: 40px 64px;
+  }
+  .join-layout {
+    max-width: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 72px;
+  }
+  .join-hero {
+    flex: 1.1;
+    padding-right: 24px;
+  }
+  .hero-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 18px;
+  }
+  .hero-title {
+    font-size: 40px;
+    font-weight: 800;
+    color: #0F172A;
+    margin: 18px 0 8px;
+  }
+  .hero-sub {
+    font-size: 16px;
+    color: #64748B;
+    margin: 0 0 26px;
+  }
+  .hero-feats {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .hero-feats li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    color: #334155;
+  }
+  .hero-feats li svg {
+    color: #2563EB;
+    flex: none;
+  }
+  .join-card {
+    flex: 1;
+    max-width: 460px;
+    padding: 34px 32px;
+  }
 }
 .brand-header {
   display: flex;
@@ -711,16 +785,18 @@ onUnmounted(() => {
   gap: 14px;
   margin-bottom: 22px;
 }
-.brand-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+.brand-icon, .hero-icon {
   background: #2563EB;
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   flex: none;
+}
+.brand-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
 }
 .brand-title {
   font-size: 22px;

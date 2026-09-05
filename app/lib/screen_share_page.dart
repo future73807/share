@@ -1113,7 +1113,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                                   children: [
                                     Icon(Icons.group_add, color: Colors.white),
                                     SizedBox(width: 8),
-                                    Text('加入会议',
+                                    Text('加入房间',
                                         style: TextStyle(
                                             color: Colors.white,
                                             fontSize: 16,
