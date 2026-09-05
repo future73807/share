@@ -30,16 +30,6 @@
                  placeholder="默认服务器连不上时手输" class="input-field">
         </div>
 
-        <span class="field-label">共享声音</span>
-        <div class="mode-chips">
-          <button v-for="mode in audioModes" :key="mode.value" type="button"
-                  class="mode-chip" :class="{ active: audioMode === mode.value }"
-                  @click="audioMode = mode.value">
-            <component :is="mode.icon" :size="15" />
-            {{ mode.label }}
-          </button>
-        </div>
-
         <button class="join-button" :disabled="!roomId || !nickname || isJoining" @click="joinRoom">
           <Loader2 v-if="isJoining" :size="18" class="spin" />
           <Users v-else :size="18" />
@@ -97,7 +87,7 @@
           </button>
         </div>
         <div class="controls">
-          <button v-if="!isSharing" @click="startSharing" class="control-button share">
+          <button v-if="!isSharing" @click="showModePicker = true" class="control-button share">
             <MonitorUp :size="18" /> 分享屏幕
           </button>
           <button v-else @click="stopSharing" class="control-button stop">
@@ -115,6 +105,21 @@
         </div>
       </div>
     </div>
+
+    <!-- 共享声音选择(点击分享屏幕时弹出) -->
+    <div v-if="showModePicker" class="picker-mask" @click.self="showModePicker = false">
+      <div class="picker-card">
+        <p class="picker-title">选择共享声音模式</p>
+        <button v-for="mode in audioModes" :key="mode.value" type="button"
+                class="picker-option" :class="{ active: audioMode === mode.value }"
+                @click="pickAndShare(mode.value)">
+          <component :is="mode.icon" :size="18" />
+          <span>{{ mode.label }}</span>
+          <Check v-if="audioMode === mode.value" :size="16" class="check" />
+        </button>
+        <button type="button" class="picker-cancel" @click="showModePicker = false">取消</button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -124,7 +129,7 @@ import { io } from 'socket.io-client'
 import {
   MonitorUp, Hash, User, Server, Tag, Maximize,
   Square, Mic, MicOff, LogOut, VolumeX, AudioLines,
-  Users, Loader2, AlertCircle
+  Users, Loader2, AlertCircle, Check
 } from 'lucide-vue-next'
 
 // 状态变量
@@ -139,6 +144,7 @@ const isMicOn = ref(true)
 const hasMicTrack = ref(false)
 const isJoining = ref(false)
 const joinError = ref('')
+const showModePicker = ref(false)
 
 // 服务器地址:?server= 参数 > 本机记录 > 同域 3000
 const initialServerUrl = new URLSearchParams(window.location.search).get('server')
@@ -564,8 +570,18 @@ const toggleMic = () => {
   }
 }
 
-const startSharing = async () => {
+const pickAndShare = (mode) => {
+  showModePicker.value = false
+  startSharing(mode)
+}
+
+const startSharing = async (mode) => {
   try {
+    // 共享开始时确定声音模式(加入房间时无需预选)
+    if (mode) {
+      audioMode.value = mode
+      localStorage.setItem('audioMode', mode)
+    }
     isMicOn.value = true
     screenStream = await getScreenStream()
     // 麦克风按需采集(混合/仅麦克风模式)
@@ -806,6 +822,66 @@ onUnmounted(() => {
 }
 .spin {
   animation: spin 0.9s linear infinite;
+}
+.picker-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.picker-card {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.picker-title {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0F172A;
+  margin: 0 0 10px;
+}
+.picker-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border: none;
+  background: transparent;
+  border-radius: 12px;
+  font-size: 15px;
+  color: #0F172A;
+  cursor: pointer;
+  text-align: left;
+}
+.picker-option:hover {
+  background: #F1F5F9;
+}
+.picker-option.active {
+  color: #2563EB;
+  font-weight: 700;
+}
+.picker-option .check {
+  margin-left: auto;
+  color: #2563EB;
+}
+.picker-cancel {
+  margin-top: 8px;
+  height: 44px;
+  border: none;
+  border-radius: 12px;
+  background: #F1F5F9;
+  color: #475569;
+  font-size: 14px;
+  cursor: pointer;
 }
 @keyframes spin {
   to { transform: rotate(360deg); }

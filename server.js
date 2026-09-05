@@ -21,6 +21,7 @@ io.on('connection', (socket) => {
 
   // 加入房间
   socket.on('join-room', ({ roomId, nickname, client }) => {
+    console.log('[join]', socket.id, '->', roomId, client || 'web');
     socket.join(roomId);
     clientTypes.set(socket.id, client === 'flutter' ? 'flutter' : 'web');
 

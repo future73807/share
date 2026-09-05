@@ -1043,14 +1043,6 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                       hint: '默认服务器连不上时手输',
                       icon: Icons.dns_outlined,
                       keyboardType: TextInputType.url),
-                  const SizedBox(height: 18),
-                  _fieldLabel('共享声音'),
-                  Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: kAudioModes
-                          .map((m) => _modeChip(m['value']!, m['label']!))
-                          .toList()),
                   const SizedBox(height: 22),
                   Container(
                     height: 52,
