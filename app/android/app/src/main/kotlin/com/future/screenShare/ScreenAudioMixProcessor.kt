@@ -15,6 +15,10 @@ import java.nio.ByteBuffer
  *  - MODE_SCREEN : 整体替换为屏幕内部声音(AudioPlaybackCapture 采集);
  *  - MODE_MIXED  : 麦克风 + 屏幕内部声音叠加(饱和截断);
  *  - MODE_NONE   : 全部置零(静音)。
+ *
+ * 注意:麦克风轨道是所有模式的音频"载体"——包括仅屏幕声音模式
+ * (屏幕内音经由该轨道的处理链注入送出),因此共享期间必须保持
+ * getUserMedia 麦克风流处于活跃状态。
  */
 class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcessing {
 
@@ -44,18 +48,19 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
     // 目标(WebRTC 处理)采样率/声道,在 initialize 中回调给出
     private var targetRate = SRC_SAMPLE_RATE
     private var targetChannels = 1
-    // 块间重采样余量
-    private val carry = ArrayList<Short>()
+    // 跨块采样率换算累加器:每块应消耗 源率/目标率*帧数 个源样本,分数部分累计到下一块
+    private var srcAcc = 0.0
+    private var logTick = 0
 
     override fun initialize(sampleRateHz: Int, numChannels: Int) {
         targetRate = if (sampleRateHz > 0) sampleRateHz else SRC_SAMPLE_RATE
         targetChannels = if (numChannels > 0) numChannels else 1
-        reset(targetRate)
+        srcAcc = 0.0
         Log.d("ScreenAudioMix", "initialize rate=$targetRate channels=$targetChannels")
     }
 
     override fun reset(newRate: Int) {
-        synchronized(carry) { carry.clear() }
+        srcAcc = 0.0
     }
 
     /** 采集线程写入 PCM16 单声道样本 */
@@ -65,7 +70,7 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
 
     override fun process(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
         when (mode) {
-            MODE_MIC -> return // 透传,不动缓冲
+            MODE_MIC -> return
             MODE_NONE -> {
                 buffer.rewind()
                 while (buffer.hasRemaining()) buffer.put(0)
@@ -73,63 +78,45 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
             }
             else -> {}
         }
-
-        val totalSamples = numBands * numFrames * targetChannels
-        if (totalSamples <= 0) return
+        val frames = numBands * numFrames
+        if (frames <= 0) return
         buffer.rewind()
-        if (buffer.remaining() < totalSamples * 2) return
+        if (buffer.remaining() < frames * targetChannels * 2) return
 
-        // 1) 拉取一段源采样,并按 (srcRate -> targetRate) 线性重采样到每输出帧一组值
-        val frameValues = FloatArray(numFrames)
-        val srcNeeded = Math.max(2, (numFrames.toLong() * SRC_SAMPLE_RATE / targetRate + 2).toInt())
-        val src = ShortArray(srcNeeded)
-        val got = synchronized(carry) {
-            var n = 0
-            for (v in carry) { if (n < srcNeeded) { src[n++] = v } }
-            carry.clear()
-            n += ring.read(src, n, srcNeeded - n)
-            n
-        }
-        if (got <= 0) {
-            // 无屏幕音频(尚未开始播放等):按静音处理
-            if (mode == MODE_SCREEN) {
-                while (buffer.hasRemaining()) buffer.put(0)
-                return
-            }
-            return
-        }
-        // 把已消费的剩余样本留到下一块,保证速率长期收敛
-        val lastPos = (numFrames - 1).toDouble() * (got - 1) / Math.max(1, numFrames - 1)
-        val consumed = Math.min(got - 1, Math.floor(lastPos).toInt() + 1)
-        for (i in consumed until got) {
-            synchronized(carry) { if (carry.size < 4096) carry.add(src[i]) }
-        }
-        for (j in 0 until numFrames) {
-            val pos = j.toDouble() * (got - 1) / Math.max(1, numFrames - 1)
-            val i0 = Math.floor(pos).toInt()
-            val i1 = Math.min(i0 + 1, got - 1)
-            val frac = (pos - i0).toFloat()
-            frameValues[j] = src[i0] * (1f - frac) + src[i1] * frac
+        // 本块应消耗的源样本数(分数部分跨块累加,长期速率精确,不会变调)
+        srcAcc += frames.toDouble() * SRC_SAMPLE_RATE / targetRate
+        val take = srcAcc.toInt().coerceAtLeast(2)
+        srcAcc -= take
+
+        if (logTick++ % 100 == 0) {
+            Log.d("ScreenAudioMix", "mode=$mode take=$take ring可用=${ring.available()}")
         }
 
-        // 2) 写回缓冲:screen=替换;mixed=叠加(饱和截断)
+        // 取源样本:缓冲不足时补零(表现为轻微静音间隙,优于变调)
+        val src = ShortArray(take)
+        ring.read(src, 0, take)
+
         buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        if (mode == MODE_SCREEN) {
-            for (band in 0 until numBands) {
-                for (j in 0 until numFrames) {
-                    val v = frameValues[j].toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-                    repeat(targetChannels) { buffer.putShort(v) }
-                }
-            }
-        } else { // MODE_MIXED
-            for (band in 0 until numBands) {
-                for (j in 0 until numFrames) {
-                    repeat(targetChannels) {
-                        val mic = buffer.getShort(buffer.position()).toInt()
-                        val mixed = (mic + frameValues[j].toInt())
-                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                        buffer.putShort(mixed.toShort())
-                    }
+        val denom = (numFrames - 1).coerceAtLeast(1)
+        for (band in 0 until numBands) {
+            for (j in 0 until numFrames) {
+                // 源样本线性插值到输出帧
+                val pos = j.toDouble() * (take - 1) / denom
+                val i0 = pos.toInt()
+                val frac = (pos - i0).toFloat()
+                val i1 = (i0 + 1).coerceAtMost(take - 1)
+                var v = src[i0] * (1f - frac) + src[i1] * frac
+                if (mode == MODE_MIXED) {
+                    val p = buffer.position()
+                    val mic = buffer.getShort(p).toInt()
+                    val mixed = (mic + v.toInt())
+                        .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    buffer.putShort(p, mixed.toShort())
+                    buffer.position(p + 2)
+                } else { // MODE_SCREEN:整体替换
+                    val out = v.toInt()
+                        .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    buffer.putShort(out.toShort())
                 }
             }
         }
@@ -157,7 +144,7 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
             writePos += count
         }
 
-        /** 顺序读取 count 个样本,不足部分返回 0,返回实际读到的有效样本数 */
+        /** 顺序读取 count 个样本,不足部分补 0,返回实际读到的有效样本数 */
         @Synchronized
         fun read(out: ShortArray, offset: Int, count: Int): Int {
             if (count <= 0) return 0
@@ -172,6 +159,9 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
             readPos += available
             return available
         }
+
+        @Synchronized
+        fun available(): Int = (writePos - readPos).toInt()
 
         @Synchronized
         fun clear() {

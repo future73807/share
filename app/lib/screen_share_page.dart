@@ -542,15 +542,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   Future<void> _startSharingInternal() async {
     try {
-      // 1. 麦克风权限(混音链路常驻麦克风,同时完成回声抑制)
-      final needMic =
-          audioMode == audioModeMixed || audioMode == audioModeMic;
-      bool micGranted = false;
-      if (needMic) {
-        micGranted = await _ensureMicPermission();
-        if (!micGranted) {
-          _toast('未授予麦克风权限,将以无声模式共享');
-        }
+      // 1. 麦克风权限(任何模式都需要:麦克风轨道是声音的"载体",
+      //    仅屏幕声音模式的系统内音也经该轨道的处理链送出)
+      final micGranted = await _ensureMicPermission();
+      if (!micGranted) {
+        _toast('未授予麦克风权限,将无法发送声音');
       }
 
       // 2. 系统授权弹窗(单个会话一次授权)
@@ -610,10 +606,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
         }
       }
 
-      // 7. 计算生效模式并下发
+      // 7. 计算生效模式并下发(麦克风轨道是所有声音模式的载体,缺失则无法发声)
       String nativeMode = effectiveNativeMode;
-      if (mic == null && (nativeMode == 'mixed' || nativeMode == 'mic')) {
-        nativeMode = screenAudioActive ? 'screen' : 'none';
+      if (mic == null && nativeMode != 'none') {
+        nativeMode = 'none';
+        _toast('麦克风不可用,本次共享无法发送声音');
       }
       if (!screenAudioActive &&
           (nativeMode == 'mixed' || nativeMode == 'screen')) {
@@ -839,6 +836,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                 ),
               );
             }),
+            const SizedBox(height: 4),
+            Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                    '提示:混合模式含麦克风,观众端外放可能产生回音;不需要讲话可选"仅屏幕声音"',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)))),
             const SizedBox(height: 12),
           ]),
         ),

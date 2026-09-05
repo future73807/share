@@ -209,7 +209,13 @@ const initializeSocket = (url) => {
   socket = io(activeServerUrl, { transports: ['websocket', 'polling'] })
   // 调试钩子:便于自动化测试检查连接状态
   if (typeof window !== 'undefined') {
-    window.__ss = { socket, peerConnections, remoteStreams }
+    window.__ss = {
+      socket, peerConnections, remoteStreams,
+      state: () => ({
+        isInRoom: isInRoom.value, isJoining: isJoining.value,
+        joinError: joinError.value, isSharing: isSharing.value
+      })
+    }
   }
 
   socket.on('connect', () => {
