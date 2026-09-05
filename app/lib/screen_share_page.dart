@@ -763,125 +763,372 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg, style: const TextStyle(color: Colors.white)),
+      backgroundColor: const Color(0xFF1E293B),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
+  }
+
+  String _shortModeLabel(String value) {
+    switch (value) {
+      case audioModeMixed:
+        return '混合';
+      case audioModeScreen:
+        return '屏幕声音';
+      case audioModeMic:
+        return '麦克风';
+      default:
+        return '无声';
+    }
+  }
+
+  IconData _modeIcon(String value) {
+    switch (value) {
+      case audioModeMixed:
+        return Icons.surround_sound;
+      case audioModeScreen:
+        return Icons.desktop_windows_outlined;
+      case audioModeMic:
+        return Icons.mic_none;
+      default:
+        return Icons.volume_off_outlined;
+    }
   }
 
   Future<String?> _pickAudioMode() async {
     return showModalBottomSheet<String>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration:
+            const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+        child: SafeArea(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const SizedBox(height: 12),
+            Container(
+                width: 40,
+                height: 4,
+                decoration:
+                    BoxDecoration(color: const Color(0xFFE2E8F0), borderRadius: BorderRadius.circular(2))),
             const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('选择共享声音模式',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            ...kAudioModes
-                .map((m) => ListTile(
-                      title: Text(m['label']!),
-                      onTap: () => Navigator.pop(ctx, m['value']),
-                    ))
-                .toList(),
-            const SizedBox(height: 8),
-          ],
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('选择共享声音模式',
+                    style: TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700, color: Color(0xFF0F172A)))),
+            ...kAudioModes.map((m) {
+              final selected = m['value'] == audioMode;
+              return InkWell(
+                onTap: () => Navigator.pop(ctx, m['value']),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  child: Row(children: [
+                    Icon(_modeIcon(m['value']!),
+                        size: 22, color: selected ? _brand : const Color(0xFF94A3B8)),
+                    const SizedBox(width: 14),
+                    Expanded(
+                        child: Text(m['label']!,
+                            style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                                color: selected ? _ink : const Color(0xFF475569)))),
+                    if (selected)
+                      const Icon(Icons.check_circle, size: 20, color: _brand),
+                  ]),
+                ),
+              );
+            }),
+            const SizedBox(height: 12),
+          ]),
         ),
       ),
     );
   }
 
   // ============ UI ============
+  static const _brand = Color(0xFF2563EB);
+  static const _brandLight = Color(0xFFEFF6FF);
+  static const _ink = Color(0xFF0F172A);
+  static const _sub = Color(0xFF64748B);
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Container(
-          width: double.infinity,
-          height: double.infinity,
-          color: Colors.grey[100],
-          child: !isInRoom ? _buildJoinForm() : _buildMeetingRoom(),
+      backgroundColor: const Color(0xFFF1F5F9),
+      body: SafeArea(child: !isInRoom ? _buildJoinForm() : _buildMeetingRoom()),
+    );
+  }
+
+  Widget _fieldLabel(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child:
+            Text(text, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _sub)),
+      );
+
+  Widget _textField(
+      {required TextEditingController controller,
+      required String hint,
+      required IconData icon,
+      ValueChanged<String>? onChanged,
+      TextInputType? keyboardType}) {
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      keyboardType: keyboardType,
+      style: const TextStyle(fontSize: 15, color: _ink),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFFA6B2C4), fontSize: 14),
+        prefixIcon: Icon(icon, size: 20, color: const Color(0xFF94A3B8)),
+        isDense: true,
+        filled: true,
+        fillColor: const Color(0xFFF8FAFC),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: _brand, width: 1.5)),
+      ),
+    );
+  }
+
+  Widget _modeChip(String value, String label, {VoidCallback? onTap}) {
+    final selected = audioMode == value;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap ?? () => setState(() => audioMode = value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? _brandLight : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: selected ? _brand : const Color(0xFFE2E8F0),
+              width: selected ? 1.4 : 1),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(_modeIcon(value),
+              size: 15, color: selected ? _brand : const Color(0xFF94A3B8)),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? _brand : const Color(0xFF475569))),
+        ]),
+      ),
+    );
+  }
+
+  Widget _actionButton(String label, IconData icon, Color color, VoidCallback onPressed,
+      {bool gradient = false}) {
+    return Container(
+      height: 50,
+      decoration: BoxDecoration(
+        color: gradient ? null : color,
+        gradient: gradient
+            ? const LinearGradient(colors: [Color(0xFF3B82F6), Color(0xFF2563EB)])
+            : null,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: color.withOpacity(gradient ? 0.35 : 0.25),
+              blurRadius: 12,
+              offset: const Offset(0, 4))
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onPressed,
+          child: Center(
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, color: Colors.white, size: 20),
+              const SizedBox(width: 7),
+              Flexible(
+                  child: Text(label,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700))),
+            ]),
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _statusPill() {
+    final sharing = isSharing;
+    final color = sharing ? const Color(0xFF16A34A) : const Color(0xFF94A3B8);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+          color: sharing ? const Color(0xFFF0FDF4) : const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(20)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Text(sharing ? '共享中' : '未共享',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+      ]),
     );
   }
 
   Widget _buildJoinForm() {
     return Center(
       child: SingleChildScrollView(
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          width: 400,
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('屏幕共享',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              TextField(
-                controller: _roomController,
-                decoration: const InputDecoration(
-                  hintText: '输入房间号',
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: (value) => roomId = value,
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _nickController,
-                decoration: const InputDecoration(
-                  hintText: '输入昵称',
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: (value) => nickname = value,
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _serverController,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  hintText: '服务器地址(连不上时手输,如 http://192.168.1.5:3000)',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('共享声音',
-                    style: TextStyle(fontSize: 14, color: Colors.grey[700])),
-              ),
-              Wrap(
-                spacing: 8,
-                children: kAudioModes
-                    .map((m) => ChoiceChip(
-                          label: Text(m['label']!),
-                          selected: audioMode == m['value'],
-                          onSelected: (_) =>
-                              setState(() => audioMode = m['value']!),
-                        ))
-                    .toList(),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: isJoining ? null : joinRoom,
-                  icon: const Icon(Icons.group_add),
-                  label: const Text('加入会议'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
+              Row(children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [Color(0xFF3B82F6), Color(0xFF2563EB)]),
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                          color: _brand.withOpacity(0.35),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6))
+                    ],
                   ),
+                  child: const Icon(Icons.screen_share, color: Colors.white, size: 28),
                 ),
+                const SizedBox(width: 14),
+                const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('屏幕共享',
+                          style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w800,
+                              color: _ink,
+                              height: 1.2)),
+                      SizedBox(height: 2),
+                      Text('实时画面 · 声音共享',
+                          style: TextStyle(fontSize: 13, color: _sub)),
+                    ]),
+              ]),
+              const SizedBox(height: 24),
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(0.06),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8))
+                  ],
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _fieldLabel('房间号'),
+                  _textField(
+                      controller: _roomController,
+                      hint: '输入房间号',
+                      icon: Icons.tag,
+                      onChanged: (v) => roomId = v),
+                  const SizedBox(height: 14),
+                  _fieldLabel('昵称'),
+                  _textField(
+                      controller: _nickController,
+                      hint: '输入你的昵称',
+                      icon: Icons.person_outline,
+                      onChanged: (v) => nickname = v),
+                  const SizedBox(height: 14),
+                  _fieldLabel('服务器地址'),
+                  _textField(
+                      controller: _serverController,
+                      hint: '默认服务器连不上时手输',
+                      icon: Icons.dns_outlined,
+                      keyboardType: TextInputType.url),
+                  const SizedBox(height: 18),
+                  _fieldLabel('共享声音'),
+                  Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: kAudioModes
+                          .map((m) => _modeChip(m['value']!, m['label']!))
+                          .toList()),
+                  const SizedBox(height: 22),
+                  Container(
+                    height: 52,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFF3B82F6), Color(0xFF2563EB)]),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                            color: _brand.withOpacity(0.35),
+                            blurRadius: 14,
+                            offset: const Offset(0, 6))
+                      ],
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: isJoining ? null : joinRoom,
+                        child: Center(
+                          child: isJoining
+                              ? const SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(
+                                      color: Colors.white, strokeWidth: 2.4))
+                              : const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.group_add, color: Colors.white),
+                                    SizedBox(width: 8),
+                                    Text('加入会议',
+                                        style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w700)),
+                                  ]),
+                        ),
+                      ),
+                    ),
+                  ),
+                ]),
               ),
               if (statusText.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(statusText,
-                      style: const TextStyle(color: Colors.red)),
+                Container(
+                  margin: const EdgeInsets.only(top: 14),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFFECACA))),
+                  child: Row(children: [
+                    const Icon(Icons.error_outline,
+                        size: 18, color: Color(0xFFDC2626)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: Text(statusText,
+                            style: const TextStyle(
+                                fontSize: 13, color: Color(0xFFB91C1C)))),
+                  ]),
                 ),
             ],
           ),
@@ -891,179 +1138,258 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   }
 
   Widget _buildMeetingRoom() {
-    return Column(
-      children: [
-        Expanded(
-          child: isFullScreen ? _buildVideoArea() : Row(
-            children: [
-              Expanded(flex: 3, child: _buildVideoArea()),
-              SizedBox(width: 160, child: _buildUserList()),
-            ],
-          ),
-        ),
-        if (!isFullScreen) _buildControlBar(),
-      ],
-    );
+    return Column(children: [
+      Expanded(
+        child: isFullScreen
+            ? _buildVideoArea()
+            : Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: Row(children: [
+                  Expanded(flex: 3, child: _buildVideoArea()),
+                  const SizedBox(width: 12),
+                  SizedBox(width: 150, child: _buildUserList()),
+                ]),
+              ),
+      ),
+      if (!isFullScreen) _buildControlBar(),
+    ]);
   }
 
   Widget _buildVideoArea() {
+    final live = isSharing || isViewing;
+    final radius = isFullScreen ? 0.0 : 20.0;
     return Container(
-      margin: const EdgeInsets.all(10),
       decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        color: const Color(0xFF0B1220),
         border: Border.all(
-          color: (isSharing || isViewing) ? Colors.blue : Colors.grey,
-        ),
-        borderRadius: BorderRadius.circular(8),
-        color: Colors.black,
+            color: live ? _brand.withOpacity(0.55) : const Color(0xFF1E293B),
+            width: live ? 1.5 : 1),
+        boxShadow: live
+            ? [BoxShadow(color: _brand.withOpacity(0.22), blurRadius: 18, offset: const Offset(0, 6))]
+            : null,
       ),
-      child: Stack(
-        children: [
-          if (_renderersInitialized)
-            RTCVideoView(isSharing ? _localRenderer : _remoteRenderer,
-                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain),
-          if (!_renderersInitialized || (!isSharing && !isViewing))
-            const Center(
-              child: Text('等待屏幕共享...',
-                  style: TextStyle(color: Colors.white70)),
-            ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: Stack(children: [
+          if (_renderersInitialized && live)
+            Positioned.fill(
+                child: RTCVideoView(isSharing ? _localRenderer : _remoteRenderer,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)),
+          if (!_renderersInitialized || !live)
+            Center(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(isSharing ? Icons.cast_connected : Icons.connected_tv,
+                  size: 52, color: Colors.white24),
+              const SizedBox(height: 12),
+              Text(isSharing ? '正在等待观众加入…' : '等待屏幕共享…',
+                  style: const TextStyle(color: Colors.white38, fontSize: 14)),
+            ])),
+          if (isSharing)
+            Positioned(
+                top: 12,
+                left: 12,
+                child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                        color: Colors.black38,
+                        borderRadius: BorderRadius.circular(20)),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Container(
+                          width: 7,
+                          height: 7,
+                          decoration: const BoxDecoration(
+                              color: Color(0xFF4ADE80), shape: BoxShape.circle)),
+                      const SizedBox(width: 6),
+                      const Text('共享中',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600)),
+                    ]))),
           Positioned(
-            top: 10,
-            right: 10,
-            child: IconButton(
-              icon: Icon(
-                isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
-                color: Colors.white,
-              ),
-              onPressed: () {
-                setState(() => isFullScreen = !isFullScreen);
-                if (isFullScreen) {
-                  SystemChrome.setEnabledSystemUIMode(
-                      SystemUiMode.immersiveSticky);
-                } else {
-                  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-                }
-              },
-            ),
-          ),
-        ],
+              top: 8,
+              right: 8,
+              child: Material(
+                  color: Colors.black38,
+                  borderRadius: BorderRadius.circular(20),
+                  child: InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () {
+                        setState(() => isFullScreen = !isFullScreen);
+                        if (isFullScreen) {
+                          SystemChrome.setEnabledSystemUIMode(
+                              SystemUiMode.immersiveSticky);
+                        } else {
+                          SystemChrome.setEnabledSystemUIMode(
+                              SystemUiMode.edgeToEdge);
+                        }
+                      },
+                      child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                              isFullScreen
+                                  ? Icons.fullscreen_exit
+                                  : Icons.fullscreen,
+                              color: Colors.white,
+                              size: 20))))),
+        ]),
       ),
     );
   }
 
   Widget _buildUserList() {
     return Container(
-      margin: const EdgeInsets.only(top: 10, right: 10, bottom: 10),
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey[300]!),
-        borderRadius: BorderRadius.circular(8),
         color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 16,
+              offset: const Offset(0, 6))
+        ],
       ),
-      child: ListView.builder(
-        itemCount: users.length,
-        itemBuilder: (context, index) {
-          final user = users[index];
-          final nick = (user['nickname'] ?? '') as String;
-          return ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: CircleAvatar(child: Text(nick.isNotEmpty ? nick[0] : '?')),
-            title: Text(nick, overflow: TextOverflow.ellipsis),
-          );
-        },
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 8),
+            child: Text('成员 · ${users.length}',
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700, color: _sub))),
+        Expanded(
+            child: users.isEmpty
+                ? Center(
+                    child: Text('暂无成员',
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFFA6B2C4))))
+                : ListView.separated(
+                    itemCount: users.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final user = users[index];
+                      final nick = (user['nickname'] ?? '') as String;
+                      final isSelf = nick == nickname;
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6),
+                        decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(12)),
+                        child: Row(children: [
+                          Container(
+                              width: 30,
+                              height: 30,
+                              alignment: Alignment.center,
+                              decoration: const BoxDecoration(
+                                  gradient: LinearGradient(colors: [
+                                    Color(0xFF3B82F6),
+                                    Color(0xFF2563EB)
+                                  ]),
+                                  shape: BoxShape.circle),
+                              child: Text(
+                                  nick.isNotEmpty ? nick[0].toUpperCase() : '?',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700))),
+                          const SizedBox(width: 8),
+                          Expanded(
+                              child: Text(nick,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: _ink))),
+                          if (isSelf)
+                            const Text('我',
+                                style: TextStyle(
+                                    fontSize: 11, color: _sub)),
+                        ]),
+                      );
+                    })),
+      ]),
     );
   }
 
   Widget _buildControlBar() {
-    final modeLabel =
-        kAudioModes.firstWhere((m) => m['value'] == audioMode)['label']!;
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-      decoration: BoxDecoration(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+      decoration: const BoxDecoration(
         color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey[300]!)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('会议室: $roomId',
-              style: const TextStyle(fontWeight: FontWeight.w600)),
-          if (isSharing)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Wrap(
-                spacing: 6,
-                alignment: WrapAlignment.center,
-                children: kAudioModes
-                    .map((m) => ChoiceChip(
-                          label: Text(m['label']!,
-                              style: const TextStyle(fontSize: 12)),
-                          selected: audioMode == m['value'],
-                          onSelected: (_) => setAudioMode(m['value']!),
-                        ))
-                    .toList(),
-              ),
-            ),
-          if (isSharing)
-            Padding(
-              padding: const EdgeInsets.only(top: 2, bottom: 4),
-              child: Text('当前声音: $modeLabel',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-            ),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (!isSharing)
-                  ElevatedButton.icon(
-                    onPressed: startSharingFlow,
-                    icon: const Icon(Icons.screen_share),
-                    label: const Text('分享'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      foregroundColor: Colors.white,
-                    ),
-                  )
-                else
-                  ElevatedButton.icon(
-                    onPressed: stopSharing,
-                    icon: const Icon(Icons.stop),
-                    label: const Text('停止共享'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                const SizedBox(width: 10),
-                if (isSharing &&
-                    (audioMode == audioModeMixed ||
-                        audioMode == audioModeMic))
-                  ElevatedButton.icon(
-                    onPressed: toggleMic,
-                    icon: Icon(isMicOn ? Icons.mic : Icons.mic_off),
-                    label: Text(isMicOn ? '关闭麦克风' : '开启麦克风'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor:
-                          isMicOn ? Colors.orange : Colors.grey,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                const SizedBox(width: 10),
-                ElevatedButton.icon(
-                  onPressed: leaveRoom,
-                  icon: const Icon(Icons.exit_to_app),
-                  label: const Text('离开'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[600],
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        boxShadow: [
+          BoxShadow(
+              color: Color(0x140F172A), blurRadius: 20, offset: Offset(0, -6))
         ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Row(children: [
+            Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                    color: _brandLight,
+                    borderRadius: BorderRadius.circular(20)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.tag, size: 14, color: _brand),
+                  const SizedBox(width: 2),
+                  Text(roomId,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: _brand)),
+                ])),
+            const Spacer(),
+            _statusPill(),
+          ]),
+          if (isSharing) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+                height: 34,
+                child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: kAudioModes.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final m = kAudioModes[index];
+                      return _modeChip(m['value']!, _shortModeLabel(m['value']!),
+                          onTap: () => setAudioMode(m['value']!));
+                    })),
+          ],
+          const SizedBox(height: 12),
+          Row(children: [
+            if (!isSharing)
+              Expanded(
+                  flex: 2,
+                  child: _actionButton('分享屏幕', Icons.screen_share, _brand,
+                      startSharingFlow,
+                      gradient: true))
+            else
+              Expanded(
+                  flex: 2,
+                  child: _actionButton(
+                      '停止共享', Icons.stop, const Color(0xFFEF4444), stopSharing)),
+            const SizedBox(width: 10),
+            if (isSharing &&
+                (audioMode == audioModeMixed || audioMode == audioModeMic))
+              Expanded(
+                  flex: 2,
+                  child: _actionButton(
+                      isMicOn ? '关闭麦克风' : '开启麦克风',
+                      isMicOn ? Icons.mic_off : Icons.mic,
+                      isMicOn ? const Color(0xFFF59E0B) : const Color(0xFF94A3B8),
+                      toggleMic)),
+            const SizedBox(width: 10),
+            Expanded(
+                flex: 1,
+                child: _actionButton('离开', Icons.logout,
+                    const Color(0xFF64748B), leaveRoom)),
+          ]),
+        ]),
       ),
     );
   }
