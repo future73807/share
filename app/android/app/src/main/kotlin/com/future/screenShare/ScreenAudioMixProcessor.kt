@@ -11,14 +11,18 @@ import java.nio.ByteBuffer
  *   -> capturePostProcessing(本处理器) -> WebRTC APM -> 编码发送。
  *
  * 本处理器根据声音分享模式改写采集缓冲:
- *  - MODE_MIC    : 原样透传麦克风(硬件回声抑制生效);
- *  - MODE_SCREEN : 整体替换为屏幕内部声音(AudioPlaybackCapture 采集);
- *  - MODE_MIXED  : 麦克风 + 屏幕内部声音叠加(饱和截断);
- *  - MODE_NONE   : 全部置零(静音)。
+ *  - MODE_MIC        : 原样透传麦克风(硬件回声抑制生效);
+ *  - MODE_SCREEN     : 整体替换为屏幕内部声音(AudioPlaybackCapture 采集);
+ *  - MODE_MIXED      : 麦克风 + 屏幕内部声音叠加(饱和截断);
+ *  - MODE_NONE       : 全部置零(静音);
+ *  - MODE_PASSTHROUGH: 透传。仅屏幕声音模式下 ADM 采集源已被换成
+ *      VirtualAudioRecord(系统内录),缓冲内容本身就是屏幕声音,处理链
+ *      不得再消费环形缓冲(否则与虚拟音源双消费导致欠载)。
  *
  * 注意:麦克风轨道是所有模式的音频"载体"——包括仅屏幕声音模式
- * (屏幕内音经由该轨道的处理链注入送出),因此共享期间必须保持
- * getUserMedia 麦克风流处于活跃状态。
+ * (屏幕内音经由该轨道送出),因此共享期间必须保持 getUserMedia 麦克风流
+ * 处于活跃状态;但仅屏幕声音模式下物理麦克风会被 VirtualAudioRecord
+ * 换源关掉,不会真正采集麦克风内容。
  */
 class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcessing {
 
@@ -27,6 +31,7 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         const val MODE_MIC = 1
         const val MODE_SCREEN = 2
         const val MODE_MIXED = 3
+        const val MODE_PASSTHROUGH = 4
 
         // 系统音频采集采样率(源);16k 为 CSDN 实测兼容方案,
         // 部分机型(MIUI 等)在 48k 下 AudioPlaybackCapture 只会采到静音
@@ -58,7 +63,8 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
     var lastOutPeak: Int = 0
         private set
 
-    /** 最近约 1 秒采集线程写入的样本数累计(Dart 侧用差值判断是否有数据) */
+    /** 送入编码的内录样本数累计(Dart 侧用差值判断屏幕内音是否有数据)。
+     *  软件替换链路由 process() 累加;换源后由 VirtualAudioRecord 交付时上报。 */
     @Volatile
     var captureWrites: Int = 0
         private set
@@ -79,12 +85,19 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         ring.write(buf, count)
     }
 
+    /** 虚拟音源(VirtualAudioRecord)每次交付的上报:输出峰值 + 实际消费的内录样本数 */
+    fun reportVirtualDelivery(peak: Int, consumed: Int) {
+        lastOutPeak = peak
+        captureWrites += consumed
+    }
+
     override fun process(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
-        if (logTick < 3) {
-            Log.d("ScreenAudioMix", "process 被调用 #$logTick mode=$mode frames=$numFrames")
+        val tick = logTick++
+        if (tick < 3) {
+            Log.d("ScreenAudioMix", "process 被调用 #$tick mode=$mode frames=$numFrames")
         }
         when (mode) {
-            MODE_MIC -> return
+            MODE_MIC, MODE_PASSTHROUGH -> return
             MODE_NONE -> {
                 buffer.rewind()
                 while (buffer.hasRemaining()) buffer.put(0)
@@ -113,7 +126,7 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
             val a = Math.abs(src[i].toInt())
             if (a > inPeak) inPeak = a
         }
-        if (logTick++ % 100 == 0) {
+        if (tick % 100 == 0) {
             Log.d("ScreenAudioMix",
                 "mode=$mode take=$take got=$got 源峰值=$inPeak ring可用=${ring.available()}")
         }

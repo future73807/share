@@ -8,6 +8,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -23,6 +24,9 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import org.webrtc.audio.JavaAudioDeviceModule
+import java.lang.reflect.Field
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -57,6 +61,45 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private var projectionCallback: MediaProjection.Callback? = null
     private var pendingFallbackResult: Result? = null
 
+    // ==== 仅屏幕声音模式:把 WebRTC ADM 的采集源从物理麦克风换成系统内录 ====
+    // 原理:flutter_webrtc 的 JavaAudioDeviceModule 在音频轨道活跃时经
+    // WebRtcAudioRecord 启动 AudioRecordThread 循环读取私有字段 audioRecord。
+    // 我们向 recordSamplesReadyCallbackAdapter 注册回调——该回调在采集线程
+    // 的两次 read 之间同步执行,此时换掉 audioRecord 字段没有任何竞态。
+    // 换成 VirtualAudioRecord(数据来自 AudioPlaybackCapture 环形缓冲)后,
+    // 原物理麦克风 AudioRecord 立即 stop+release,麦克风硬件不再被采集。
+
+    /** 请求的声音模式("screen"/"mic"/"mixed"/"none"),Dart 经 setAudioShareMode 下发 */
+    @Volatile private var requestedAudioMode: String = "mic"
+
+    /** true = 需要把 ADM 采集源换成系统内录(仅屏幕声音且内录采集活跃) */
+    @Volatile private var micBypassWanted = false
+
+    private var samplesHookInstalled = false
+    private var samplesAdapter: Any? = null
+    private var samplesRemoveMethod: java.lang.reflect.Method? = null
+    private var wrarHolder: Any? = null            // WebRtcAudioRecord 实例
+    private var wrarRecordField: Field? = null     // 其私有 audioRecord 字段
+    private var wrarBufferField: Field? = null     // 其私有 byteBuffer 字段(换源时清零防麦克风样音外泄)
+    private var wrarSourceField: Field? = null     // 其私有 audioSource 字段(切回麦克风时重建用)
+    private var virtualRecord: VirtualAudioRecord? = null
+    private val admLock = Any()
+
+    /** 恢复物理麦克风失败后置 true,避免采集线程上每 10ms 重试构造 AudioRecord */
+    @Volatile private var micRestoreFailed = false
+
+    // 原物理麦克风 AudioRecord 的构造参数(首次换源时记录,恢复麦克风时照抄)
+    private var originalMicSaved = false
+    private var originalMicSource = MediaRecorder.AudioSource.MIC
+    private var originalMicRate = 48000
+    private var originalMicMask = AudioFormat.CHANNEL_IN_STEREO
+    private var originalMicEncoding = AudioFormat.ENCODING_PCM_16BIT
+
+    /** 运行在 WebRTC 采集线程上,每个 10ms 块回调一次 */
+    private val admSamplesHook = JavaAudioDeviceModule.SamplesReadyCallback {
+        manageAdmSource()
+    }
+
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(binding.binaryMessenger, CHANNEL_NAME)
         channel.setMethodCallHandler(this)
@@ -75,6 +118,7 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 ?.capturePostProcessing?.removeProcessor(mixProcessor)
         } catch (_: Throwable) {}
         mixProcessor.registered = false
+        detachAdmHook()
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -130,13 +174,9 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 result.success(null)
             }
             "setAudioShareMode" -> {
-                mixProcessor.mode = when (call.argument<String>("mode")) {
-                    "none" -> ScreenAudioMixProcessor.MODE_NONE
-                    "screen" -> ScreenAudioMixProcessor.MODE_SCREEN
-                    "mixed" -> ScreenAudioMixProcessor.MODE_MIXED
-                    else -> ScreenAudioMixProcessor.MODE_MIC
-                }
-                Log.i(TAG, "声音模式 -> ${call.argument<String>("mode")}")
+                requestedAudioMode = call.argument<String>("mode") ?: "mic"
+                applyAudioMode()
+                Log.i(TAG, "声音模式 -> $requestedAudioMode (micBypass=$micBypassWanted)")
                 result.success(null)
             }
             "startSystemAudioCapture" -> {
@@ -303,6 +343,8 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             try { record.stop() } catch (_: Throwable) {}
             try { record.release() } catch (_: Throwable) {}
         }
+        // 内录已活跃:若当前请求的是仅屏幕声音,现在才具备换源条件
+        applyAudioMode()
     }
 
     private fun stopAudioCaptureInternal(releaseOwnProjection: Boolean) {
@@ -313,6 +355,7 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             ownProjection = null
         }
         mixProcessor.ring.clear()
+        applyAudioMode()
         Log.i(TAG, "系统音频采集已停止 (releaseOwnProjection=$releaseOwnProjection)")
     }
 
@@ -342,6 +385,221 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             mainHandler.post { pending.success(false) }
         }
         return true
+    }
+
+    /**
+     * 声音模式生效:决定处理器模式与是否需要把 ADM 采集源换成系统内录。
+     *
+     * 仅屏幕声音 + 内录活跃时 micBypassWanted=true,由采集线程回调完成换源;
+     * 处理器先维持 MODE_SCREEN(替换注入,换源未完成期间与旧行为一致,
+     * 保证无麦克风内容外泄),换源完成后由虚拟音源翻成 MODE_PASSTHROUGH。
+     */
+    private fun applyAudioMode() {
+        micBypassWanted = requestedAudioMode == "screen" && audioCapturing
+        mixProcessor.mode = when (requestedAudioMode) {
+            "none" -> ScreenAudioMixProcessor.MODE_NONE
+            "screen" -> ScreenAudioMixProcessor.MODE_SCREEN
+            "mixed" -> ScreenAudioMixProcessor.MODE_MIXED
+            else -> ScreenAudioMixProcessor.MODE_MIC
+        }
+        if (micBypassWanted) installAdmHook()
+    }
+
+    /** 轮询安装 ADM 采集源钩子(flutter_webrtc 可能晚于本插件初始化) */
+    private fun installAdmHook() {
+        if (samplesHookInstalled) return
+        fun tryInstall(attempt: Int) {
+            if (samplesHookInstalled || !micBypassWanted) return
+            if (resolveAdmTargets()) return
+            if (attempt < 20) {
+                mainHandler.postDelayed({ tryInstall(attempt + 1) }, 250)
+            } else {
+                Log.w(TAG, "ADM 换源钩子安装超时,仅屏幕声音将走软件替换链路(麦克风仍会被采集)")
+            }
+        }
+        tryInstall(0)
+    }
+
+    /**
+     * 解析并挂接 flutter_webrtc 的 ADM 采集链:
+     * sharedSingleton -> methodCallHandler.recordSamplesReadyCallbackAdapter(注册回调)
+     *                 -> getUserMediaImpl.audioDeviceModule.audioInput(=WebRtcAudioRecord)
+     *                 -> 其私有 audioRecord / byteBuffer / audioSource 字段
+     */
+    private fun resolveAdmTargets(): Boolean {
+        if (samplesHookInstalled) return true
+        return try {
+            val singleton = FlutterWebRTCPlugin.sharedSingleton ?: return false
+            val mch = singleton.javaClass.getDeclaredField("methodCallHandler")
+                .apply { isAccessible = true }.get(singleton) ?: return false
+            val adapter = try {
+                mch.javaClass.getField("recordSamplesReadyCallbackAdapter").get(mch)
+            } catch (_: Throwable) {
+                null
+            } ?: return false
+            val gum = mch.javaClass.getDeclaredField("getUserMediaImpl")
+                .apply { isAccessible = true }.get(mch) ?: return false
+            val adm = try {
+                gum.javaClass.getDeclaredField("audioDeviceModule")
+                    .apply { isAccessible = true }.get(gum)
+            } catch (_: Throwable) {
+                null
+            } ?: return false
+            val audioInput = try {
+                adm.javaClass.getField("audioInput").get(adm)
+            } catch (_: Throwable) {
+                null
+            } ?: return false
+
+            var recField: Field? = null
+            var bufField: Field? = null
+            var srcField: Field? = null
+            var c: Class<*>? = audioInput.javaClass
+            while (c != null) {
+                if (recField == null) recField = try {
+                    c!!.getDeclaredField("audioRecord").apply { isAccessible = true }
+                } catch (_: NoSuchFieldException) { null }
+                if (bufField == null) bufField = try {
+                    c!!.getDeclaredField("byteBuffer").apply { isAccessible = true }
+                } catch (_: NoSuchFieldException) { null }
+                if (srcField == null) srcField = try {
+                    c!!.getDeclaredField("audioSource").apply { isAccessible = true }
+                } catch (_: NoSuchFieldException) { null }
+                c = c.superclass
+            }
+            if (recField == null) {
+                Log.w(TAG, "WebRtcAudioRecord.audioRecord 字段未找到")
+                return false
+            }
+
+            val addMethod = adapter.javaClass.getMethod(
+                "addCallback", JavaAudioDeviceModule.SamplesReadyCallback::class.java)
+            addMethod.invoke(adapter, admSamplesHook)
+            samplesRemoveMethod = try {
+                adapter.javaClass.getMethod(
+                    "removeCallback", JavaAudioDeviceModule.SamplesReadyCallback::class.java)
+            } catch (_: Throwable) { null }
+            samplesAdapter = adapter
+            wrarHolder = audioInput
+            wrarRecordField = recField
+            wrarBufferField = bufField
+            wrarSourceField = srcField
+            samplesHookInstalled = true
+            Log.i(TAG, "ADM 换源钩子已安装 (audioInput=${audioInput.javaClass.simpleName})")
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "解析 ADM 采集链失败: ${t.message}")
+            false
+        }
+    }
+
+    /** 运行在 WebRTC 采集线程:按当前期望源(audioRecord 字段)做换源/还原 */
+    private fun manageAdmSource() {
+        val holder = wrarHolder ?: return
+        val field = wrarRecordField ?: return
+        synchronized(admLock) {
+            val cur = try {
+                field.get(holder)
+            } catch (_: Throwable) {
+                return
+            } ?: run {
+                // ADM 已释放采集资源(会话结束),复位换源状态
+                virtualRecord = null
+                originalMicSaved = false
+                return
+            }
+            if (micBypassWanted) {
+                if (cur !== virtualRecord) swapToPlayback(holder, field, cur)
+            } else if (cur === virtualRecord && !micRestoreFailed) {
+                restoreMicRecord(holder, field)
+            }
+        }
+    }
+
+    /** 把物理麦克风 AudioRecord 换成虚拟内录音源,并立即关闭物理麦克风 */
+    private fun swapToPlayback(holder: Any, field: Field, cur: Any) {
+        val oldMic = cur as? AudioRecord ?: return
+        try {
+            val fmt = oldMic.format
+            val rate = if (fmt.sampleRate > 0) fmt.sampleRate else originalMicRate
+            val channels = Integer.bitCount(fmt.channelMask).coerceIn(1, 2)
+            if (!originalMicSaved) {
+                originalMicSource = try {
+                    wrarSourceField?.getInt(holder) ?: MediaRecorder.AudioSource.MIC
+                } catch (_: Throwable) {
+                    MediaRecorder.AudioSource.MIC
+                }
+                originalMicRate = rate
+                originalMicMask = fmt.channelMask
+                originalMicEncoding = fmt.encoding
+                originalMicSaved = true
+            }
+            val virtual = VirtualAudioRecord(mixProcessor, rate, channels)
+            field.set(holder, virtual)
+            virtualRecord = virtual
+            micRestoreFailed = false
+            // 清零本块已读入内存的麦克风样本:本回调返回后该块将被送出,
+            // 清零确保换源瞬间没有任何麦克风内容外泄(回调处于两次 read 之间,
+            // 且 nativeDataIsRecorded 尚未执行,清零是安全的)
+            try {
+                (wrarBufferField?.get(holder) as? ByteBuffer)?.let { b ->
+                    b.rewind()
+                    while (b.hasRemaining()) b.put(0)
+                }
+            } catch (_: Throwable) {}
+            // 立即停掉物理麦克风(采集线程此刻不在读它,无竞态)
+            try { oldMic.stop() } catch (_: Throwable) {}
+            try { oldMic.release() } catch (_: Throwable) {}
+            Log.i(TAG, "ADM 采集源已切换为系统内录,物理麦克风已停止 (rate=$rate ch=$channels)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "ADM 换源失败,回退软件替换链路", t)
+            micBypassWanted = false
+        }
+    }
+
+    /** 从虚拟内录音源切回物理麦克风(仅屏幕声音 -> 麦克风/混合模式) */
+    private fun restoreMicRecord(holder: Any, field: Field) {
+        val virtual = virtualRecord ?: return
+        try {
+            val minBuf = AudioRecord.getMinBufferSize(
+                originalMicRate, originalMicMask, originalMicEncoding
+            ).coerceAtLeast(4096)
+            @SuppressLint("MissingPermission")
+            val mic = AudioRecord(
+                originalMicSource, originalMicRate, originalMicMask,
+                originalMicEncoding, minBuf * 2
+            )
+            if (mic.state != AudioRecord.STATE_INITIALIZED) {
+                throw IllegalStateException("麦克风 AudioRecord state=${mic.state}")
+            }
+            mic.startRecording()
+            field.set(holder, mic)
+            virtualRecord = null
+            Log.i(TAG, "ADM 采集源已恢复为物理麦克风 (rate=$originalMicRate)")
+        } catch (t: Throwable) {
+            // 恢复失败:虚拟源改为交付静音,把环形缓冲留给处理链(混音注入仍可用)
+            Log.e(TAG, "恢复物理麦克风失败,虚拟源转为静音兜底", t)
+            virtual.deliverSilence = true
+            micRestoreFailed = true
+        }
+    }
+
+    /** 引擎分离时摘除采集回调并清空反射缓存(防引擎重建后重复注册) */
+    private fun detachAdmHook() {
+        micBypassWanted = false
+        virtualRecord = null
+        originalMicSaved = false
+        micRestoreFailed = false
+        try {
+            samplesRemoveMethod?.invoke(samplesAdapter, admSamplesHook)
+        } catch (_: Throwable) {}
+        samplesHookInstalled = false
+        samplesAdapter = null
+        samplesRemoveMethod = null
+        wrarHolder = null
+        wrarRecordField = null
+        wrarBufferField = null
+        wrarSourceField = null
     }
 
     private fun registerAudioProcessor() {

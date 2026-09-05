@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'brand_logo.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,7 +22,7 @@ const String audioModeNone = 'none'; // 无声
 
 const List<Map<String, String>> kAudioModes = [
   {'value': audioModeMixed, 'label': '混合(屏幕+麦克风)'},
-  {'value': audioModeScreen, 'label': '仅屏幕声音'},
+  {'value': audioModeScreen, 'label': '仅屏幕声音(不采集麦克风)'},
   {'value': audioModeMic, 'label': '仅麦克风'},
   {'value': audioModeNone, 'label': '无声'},
 ];
@@ -547,12 +548,17 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   Future<void> _startSharingInternal() async {
     try {
-      // 1. 麦克风权限(无声模式不需要;其余模式必须——安卓上任何声音
-      //    [含屏幕内音] 都经 flutter_webrtc 的麦克风通道送出)
+      // 1. 麦克风权限(无声模式不需要)。其余模式必须:
+      //    - 麦克风/混合模式:采集麦克风本身;
+      //    - 仅屏幕声音:安卓系统规定声音内录(AudioPlaybackCapture)
+      //      也必须持有"录制音频"权限,但本模式不会打开/采集物理麦克风
+      //      (原生侧会把 WebRTC 采集源换成系统内录)。
       if (audioMode != audioModeNone) {
         final micGranted = await _ensureMicPermission();
         if (!micGranted) {
-          _toast('未授予麦克风权限,无法发送声音');
+          _toast(audioMode == audioModeScreen
+              ? '安卓系统要求内录也需"录制音频"权限(不会采集麦克风)'
+              : '未授予麦克风权限,无法发送声音');
           return;
         }
       }
@@ -576,7 +582,9 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       });
       final videoTracks = screenStream!.getVideoTracks();
 
-      // 5. 麦克风流(所有声音模式的音频载体;无声模式跳过)
+      // 5. 麦克风流(所有声音模式的音频载体;无声模式跳过)。
+      //    仅屏幕声音模式下,原生侧会把 WebRTC 采集源换成系统内录并
+      //    关闭物理麦克风——这里创建的轨道只作传输载体,不采麦克风内容。
       MediaStream? mic;
       if (audioMode != audioModeNone) {
         try {
@@ -1031,15 +1039,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(children: [
-                Container(
-                  width: 52,
-                  height: 52,
-                  decoration: BoxDecoration(
-                    color: _brand,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: const Icon(Icons.screen_share, color: Colors.white, size: 28),
-                ),
+                const BrandLogo(size: 52),
                 const SizedBox(width: 14),
                 const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
