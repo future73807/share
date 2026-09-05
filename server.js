@@ -158,6 +158,19 @@ io.on('connection', (socket) => {
 
 // 监听所有网络接口
 const PORT = process.env.PORT || 3000;
+
+// 端口被占用等启动失败时给出可操作的提示,而不是抛堆栈
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[启动失败] 端口 ${PORT} 已被其他程序占用,换一个端口即可,例如:`);
+    console.error(`  PowerShell:  $env:PORT = "31200"; node server.js`);
+    console.error(`  CMD:         set PORT=31200 && node server.js`);
+    console.error(`  Git Bash:    PORT=31200 node server.js`);
+    process.exit(1);
+  }
+  throw err;
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`服务器运行在 http://0.0.0.0:${PORT}`);
 });

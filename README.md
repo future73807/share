@@ -31,9 +31,13 @@
 ### 常用命令速查
 
 ```bash
-# ── 后端(信令服务器,两种启动方式)──
-node server.js                      # 方式一:默认监听 0.0.0.0:3000
-PORT=31200 node server.js           # 方式二:自定义端口(Windows 下 3000 被占用/EACCES 时换端口)
+# ── 后端(信令服务器)──
+node server.js                        # 启动,默认端口 3000
+
+# 端口被占用时换端口(按你的终端三选一)
+$env:PORT = "31200"; node server.js   # PowerShell
+set PORT=31200 && node server.js      # CMD
+PORT=31200 node server.js             # Git Bash / Linux / macOS
 
 # ── Web 端 ──
 npm install                         # 首次安装依赖
