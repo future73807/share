@@ -925,22 +925,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     );
   }
 
-  Widget _actionButton(String label, IconData icon, Color color, VoidCallback onPressed,
-      {bool gradient = false}) {
+  Widget _actionButton(String label, IconData icon, Color color, VoidCallback onPressed) {
     return Container(
       height: 50,
       decoration: BoxDecoration(
-        color: gradient ? null : color,
-        gradient: gradient
-            ? const LinearGradient(colors: [Color(0xFF3B82F6), Color(0xFF2563EB)])
-            : null,
+        color: color,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-              color: color.withOpacity(gradient ? 0.35 : 0.25),
-              blurRadius: 12,
-              offset: const Offset(0, 4))
-        ],
       ),
       child: Material(
         color: Colors.transparent,
@@ -999,15 +989,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                   width: 52,
                   height: 52,
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [Color(0xFF3B82F6), Color(0xFF2563EB)]),
+                    color: _brand,
                     borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                          color: _brand.withOpacity(0.35),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6))
-                    ],
                   ),
                   child: const Icon(Icons.screen_share, color: Colors.white, size: 28),
                 ),
@@ -1072,15 +1055,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                   Container(
                     height: 52,
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [Color(0xFF3B82F6), Color(0xFF2563EB)]),
+                      color: _brand,
                       borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                            color: _brand.withOpacity(0.35),
-                            blurRadius: 14,
-                            offset: const Offset(0, 6))
-                      ],
                     ),
                     child: Material(
                       color: Colors.transparent,
@@ -1283,11 +1259,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                               height: 30,
                               alignment: Alignment.center,
                               decoration: const BoxDecoration(
-                                  gradient: LinearGradient(colors: [
-                                    Color(0xFF3B82F6),
-                                    Color(0xFF2563EB)
-                                  ]),
-                                  shape: BoxShape.circle),
+                                  color: _brand, shape: BoxShape.circle),
                               child: Text(
                                   nick.isNotEmpty ? nick[0].toUpperCase() : '?',
                                   style: const TextStyle(
@@ -1365,9 +1337,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             if (!isSharing)
               Expanded(
                   flex: 2,
-                  child: _actionButton('分享屏幕', Icons.screen_share, _brand,
-                      startSharingFlow,
-                      gradient: true))
+                  child: _actionButton(
+                      '分享屏幕', Icons.screen_share, _brand, startSharingFlow))
             else
               Expanded(
                   flex: 2,

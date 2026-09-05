@@ -1,84 +1,116 @@
 <template>
   <div class="screen-share-container">
-    <!-- 加入房间表单 -->
-    <div v-if="!isInRoom" class="join-form">
-      <h2>屏幕共享</h2>
-      <div class="form-group">
-        <input v-model="roomId" type="text" placeholder="输入房间号" class="input-field">
-        <input v-model="nickname" type="text" placeholder="输入昵称" class="input-field">
-        <div class="audio-mode-group">
-          <span class="audio-mode-label">分享声音:</span>
-          <div class="audio-mode-options">
-            <label v-for="mode in audioModes" :key="mode.value" class="audio-mode-option">
-              <input type="radio" :value="mode.value" v-model="audioMode">
-              <span>{{ mode.label }}</span>
-            </label>
+    <!-- 加入房间 -->
+    <div v-if="!isInRoom" class="join-wrap">
+      <div class="join-card">
+        <div class="brand-header">
+          <div class="brand-icon"><MonitorUp :size="26" /></div>
+          <div>
+            <h2 class="brand-title">屏幕共享</h2>
+            <p class="brand-sub">实时画面 · 声音共享</p>
           </div>
         </div>
-        <button @click="joinRoom" class="join-button" :disabled="!roomId || !nickname">
-          加入会议
+
+        <label class="field-label" for="room">房间号</label>
+        <div class="input-wrap">
+          <Hash :size="17" class="input-icon" />
+          <input id="room" v-model="roomId" type="text" placeholder="输入房间号" class="input-field">
+        </div>
+
+        <label class="field-label" for="nick">昵称</label>
+        <div class="input-wrap">
+          <User :size="17" class="input-icon" />
+          <input id="nick" v-model="nickname" type="text" placeholder="输入你的昵称" class="input-field">
+        </div>
+
+        <label class="field-label" for="server">服务器地址</label>
+        <div class="input-wrap">
+          <Server :size="17" class="input-icon" />
+          <input id="server" v-model="serverInput" type="text"
+                 placeholder="默认服务器连不上时手输" class="input-field">
+        </div>
+
+        <span class="field-label">共享声音</span>
+        <div class="mode-chips">
+          <button v-for="mode in audioModes" :key="mode.value" type="button"
+                  class="mode-chip" :class="{ active: audioMode === mode.value }"
+                  @click="audioMode = mode.value">
+            <component :is="mode.icon" :size="15" />
+            {{ mode.label }}
+          </button>
+        </div>
+
+        <button class="join-button" :disabled="!roomId || !nickname || isJoining" @click="joinRoom">
+          <Loader2 v-if="isJoining" :size="18" class="spin" />
+          <Users v-else :size="18" />
+          {{ isJoining ? '连接中…' : '加入会议' }}
         </button>
+
+        <div v-if="joinError" class="error-pill">
+          <AlertCircle :size="16" />
+          <span>{{ joinError }}</span>
+        </div>
       </div>
     </div>
 
-    <!-- 会议室内容 -->
+    <!-- 会议室 -->
     <div v-else class="meeting-room">
-      <!-- 视频显示区域 -->
       <div class="main-content">
-        <div class="video-container" :class="{ 'is-sharing': isSharing || isViewing }">
-          <video ref="screenVideo" autoplay playsinline
-                 :class="{ 'hidden': !isSharing && !isViewing }"
-                 :muted="isSharing"></video>
-          <button v-if="isSharing || isViewing" class="fullscreen-btn" @click="enterFullscreen">
-            <span class="icon">⛶</span> 全屏
-          </button>
+        <div class="video-container" :class="{ live: isSharing || isViewing }">
+          <video ref="screenVideo" autoplay playsinline :muted="isSharing"></video>
           <div class="video-overlay" v-if="!isSharing && !isViewing">
-            <span class="no-video-text">等待屏幕共享...</span>
+            <MonitorUp :size="44" />
+            <p>等待屏幕共享…</p>
           </div>
+          <div class="live-badge" v-if="isSharing">
+            <span class="live-dot"></span>共享中
+          </div>
+          <button class="fullscreen-btn" @click="enterFullscreen" title="全屏">
+            <Maximize :size="16" />
+          </button>
         </div>
 
-        <!-- 用户列表 -->
-        <div class="users-list">
-          <div v-for="user in users" :key="user.socketId" class="user-avatar">
-            <span class="avatar">{{ user.nickname.charAt(0) }}</span>
-            <span class="name">{{ user.nickname }}</span>
+        <div class="users-panel">
+          <p class="users-title">成员 · {{ users.length }}</p>
+          <div class="users-scroll">
+            <div v-for="user in users" :key="user.socketId" class="user-row">
+              <span class="avatar">{{ user.nickname.charAt(0).toUpperCase() }}</span>
+              <span class="name">{{ user.nickname }}</span>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- 底部工具栏 -->
       <div class="bottom-toolbar">
-        <div class="room-info">
-          <h3>会议室: {{ roomId }}</h3>
+        <div class="toolbar-top">
+          <span class="room-chip"><Tag :size="13" /> {{ roomId }}</span>
+          <span class="status-pill" :class="{ live: isSharing }">
+            <span class="dot"></span>{{ isSharing ? '共享中' : '未共享' }}
+          </span>
         </div>
-        <div class="audio-mode-group" v-if="isSharing">
-          <span class="audio-mode-label">声音:</span>
-          <div class="audio-mode-options">
-            <button v-for="mode in audioModes" :key="mode.value"
-                    class="audio-mode-chip"
-                    :class="{ active: audioMode === mode.value }"
-                    @click="setAudioMode(mode.value)">
-              {{ mode.label }}
-            </button>
-          </div>
+        <div class="mode-chips scroll" v-if="isSharing">
+          <button v-for="mode in audioModes" :key="mode.value" type="button"
+                  class="mode-chip" :class="{ active: audioMode === mode.value }"
+                  @click="setAudioMode(mode.value)">
+            <component :is="mode.icon" :size="14" />
+            {{ shortMode(mode.label) }}
+          </button>
         </div>
-        <div class="meeting-controls">
+        <div class="controls">
           <button v-if="!isSharing" @click="startSharing" class="control-button share">
-            <span class="icon">📤</span>
-            分享屏幕
+            <MonitorUp :size="18" /> 分享屏幕
           </button>
           <button v-else @click="stopSharing" class="control-button stop">
-            <span class="icon">⏹</span>
-            停止共享
+            <Square :size="15" /> 停止共享
           </button>
           <button v-if="isSharing && hasMicTrack" @click="toggleMic" class="control-button mic"
                   :class="{ off: !isMicOn }">
-            <span class="icon">{{ isMicOn ? '🎤' : '🔇' }}</span>
+            <MicOff v-if="!isMicOn" :size="18" />
+            <Mic v-else :size="18" />
             {{ isMicOn ? '关闭麦克风' : '开启麦克风' }}
           </button>
           <button @click="leaveRoom" class="control-button leave">
-            <span class="icon">🚪</span>
-            离开会议
+            <LogOut :size="18" /> 离开会议
           </button>
         </div>
       </div>
@@ -89,6 +121,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { io } from 'socket.io-client'
+import {
+  MonitorUp, Hash, User, Server, Tag, Maximize,
+  Square, Mic, MicOff, LogOut, VolumeX, AudioLines,
+  Users, Loader2, AlertCircle
+} from 'lucide-vue-next'
 
 // 状态变量
 const roomId = ref(localStorage.getItem('roomId') || '')
@@ -100,15 +137,30 @@ const screenVideo = ref(null)
 const users = ref([])
 const isMicOn = ref(true)
 const hasMicTrack = ref(false)
+const isJoining = ref(false)
+const joinError = ref('')
+
+// 服务器地址:?server= 参数 > 本机记录 > 同域 3000
+const initialServerUrl = new URLSearchParams(window.location.search).get('server')
+  || localStorage.getItem('serverUrl')
+  || `${window.location.protocol}//${window.location.hostname}:3000`
+const serverInput = ref(initialServerUrl)
 
 // 声音分享模式: mixed=屏幕+麦克风, screen=仅屏幕内音, mic=仅麦克风, none=无声
 const audioModes = [
-  { value: 'mixed', label: '混合(屏幕+麦克风)' },
-  { value: 'screen', label: '仅屏幕声音' },
-  { value: 'mic', label: '仅麦克风' },
-  { value: 'none', label: '无声' }
+  { value: 'mixed', label: '混合(屏幕+麦克风)', icon: AudioLines },
+  { value: 'screen', label: '仅屏幕声音', icon: MonitorUp },
+  { value: 'mic', label: '仅麦克风', icon: Mic },
+  { value: 'none', label: '无声', icon: VolumeX }
 ]
 const audioMode = ref(localStorage.getItem('audioMode') || 'mixed')
+
+const shortMode = (label) => ({
+  '混合(屏幕+麦克风)': '混合',
+  '仅屏幕声音': '屏幕声音',
+  '仅麦克风': '麦克风',
+  '无声': '无声'
+}[label] || label)
 
 // 全屏功能
 const enterFullscreen = () => {
@@ -128,14 +180,12 @@ const enterFullscreen = () => {
 
 // WebRTC 相关变量
 let socket = null
+let activeServerUrl = initialServerUrl
 let screenStream = null // 屏幕共享流(视频+屏幕内音)
 let micStream = null    // 麦克风流(带回声抑制)
 let peerConnections = new Map()
 const remoteStreams = new Map() // socketId -> MediaStream(合成远端视频+音频)
 const requestedStreams = new Set() // 已请求过流的共享者,防止重复请求
-
-const serverUrl = new URLSearchParams(window.location.search).get('server')
-  || `${window.location.protocol}//${window.location.hostname}:3000`
 
 // 麦克风约束:开启回声抑制/噪声抑制/自动增益,避免扬声器声音被麦克风二次采集造成回音
 const micConstraints = {
@@ -147,16 +197,23 @@ const micConstraints = {
   }
 }
 
-// 初始化 Socket.IO 连接
-const initializeSocket = () => {
-  socket = io(serverUrl, { transports: ['websocket', 'polling'] })
-  socket.on('connect', () => {
-    console.log('Connected to server')
-  })
+// 初始化 Socket.IO 连接(地址变化时由 joinRoom 重建)
+const initializeSocket = (url) => {
+  activeServerUrl = url || activeServerUrl
+  socket = io(activeServerUrl, { transports: ['websocket', 'polling'] })
   // 调试钩子:便于自动化测试检查连接状态
   if (typeof window !== 'undefined') {
     window.__ss = { socket, peerConnections, remoteStreams }
   }
+
+  socket.on('connect', () => {
+    console.log('Connected to server')
+    joinError.value = ''
+  })
+
+  socket.on('connect_error', () => {
+    joinError.value = `无法连接 ${activeServerUrl},请检查服务器地址和网络`
+  })
 
   socket.on('room-users', (data) => {
     users.value = data.users
@@ -301,6 +358,20 @@ const initializeSocket = () => {
   })
 }
 
+// 等待连接建立
+const waitForConnected = (timeout) => new Promise(resolve => {
+  const start = Date.now()
+  const timer = setInterval(() => {
+    if (socket && socket.connected) {
+      clearInterval(timer)
+      resolve(true)
+    } else if (Date.now() - start > timeout) {
+      clearInterval(timer)
+      resolve(false)
+    }
+  }, 250)
+})
+
 // 向指定用户创建对等连接并发送 Offer(共享者侧)
 const createOfferTo = async (socketId) => {
   const peerConnection = createPeerConnection(socketId)
@@ -383,18 +454,36 @@ const createPeerConnection = (socketId) => {
 }
 
 // 加入房间
-const joinRoom = () => {
-  if (roomId.value && nickname.value) {
-    localStorage.setItem('roomId', roomId.value)
-    localStorage.setItem('nickname', nickname.value)
-    localStorage.setItem('audioMode', audioMode.value)
-    socket.emit('join-room', {
-      roomId: roomId.value,
-      nickname: nickname.value,
-      client: 'web'
-    })
-    isInRoom.value = true
+const joinRoom = async () => {
+  if (!roomId.value || !nickname.value || isJoining.value) return
+  isJoining.value = true
+  joinError.value = ''
+  let url = (serverInput.value || initialServerUrl).trim()
+  if (!/^https?:\/\//.test(url)) url = `http://${url}`
+  url = url.replace(/\/+$/, '')
+
+  localStorage.setItem('roomId', roomId.value)
+  localStorage.setItem('nickname', nickname.value)
+  localStorage.setItem('audioMode', audioMode.value)
+  localStorage.setItem('serverUrl', url)
+
+  // 地址变化或未连接:按新地址重建 socket(失败可改地址重试)
+  if (!socket || !socket.connected || url !== activeServerUrl) {
+    initializeSocket(url)
   }
+  const ok = await waitForConnected(8000)
+  if (!ok) {
+    isJoining.value = false
+    joinError.value = `无法连接 ${url},请检查服务器地址和网络`
+    return
+  }
+  socket.emit('join-room', {
+    roomId: roomId.value,
+    nickname: nickname.value,
+    client: 'web'
+  })
+  isInRoom.value = true
+  isJoining.value = false
 }
 
 // 离开房间
@@ -565,352 +654,420 @@ onUnmounted(() => {
 
 <style scoped>
 .screen-share-container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 20px;
   min-height: 100vh;
-  background-color: #f8f9fa;
+  background-color: #F1F5F9;
+  color: #0F172A;
 }
 
-.join-form {
+/* ── 加入页 ── */
+.join-wrap {
+  min-height: 100vh;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 80vh;
-  gap: 24px;
+  padding: 24px 16px;
 }
-
-.join-form h2 {
-  font-size: 2.5rem;
-  color: #2c3e50;
-  margin-bottom: 1rem;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.join-card {
   width: 100%;
   max-width: 400px;
+  background: #fff;
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.07);
 }
-
-.input-field {
-  padding: 12px 16px;
-  border: 2px solid #e0e0e0;
-  border-radius: 8px;
-  font-size: 1rem;
-  transition: border-color 0.3s;
-}
-
-.input-field:focus {
-  border-color: #2196F3;
-  outline: none;
-}
-
-.join-button {
-  padding: 12px 24px;
-  background-color: #2196F3;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 1rem;
-  font-weight: 600;
-  transition: background-color 0.3s;
-}
-
-.join-button:hover {
-  background-color: #1976D2;
-}
-
-.join-button:disabled {
-  background-color: #e0e0e0;
-  cursor: not-allowed;
-}
-
-.meeting-room {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  position: relative;
-}
-
-.main-content {
-  display: flex;
-  flex: 1;
-  position: relative;
-}
-
-.video-container {
-  flex: 1;
-  position: relative;
-  background: #000;
-}
-
-.users-list {
-  width: 200px;
-  background: #f8f9fa;
-  padding: 16px;
-  border-left: 1px solid #e9ecef;
-  overflow-y: auto;
-}
-
-.user-avatar {
+.brand-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 14px;
+  margin-bottom: 22px;
 }
-
-.avatar {
-  width: 40px;
-  height: 40px;
-  background: #2196F3;
-  color: white;
-  border-radius: 50%;
+.brand-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: #2563EB;
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.2rem;
+  flex: none;
 }
-
-.name {
-  font-size: 0.9rem;
-  color: #495057;
-}
-
-.bottom-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 16px 24px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(10px);
-  border-top: 1px solid #e9ecef;
-}
-
-.room-info {
-  display: flex;
-  align-items: center;
-}
-
-.room-info h3 {
-  font-size: 1.1rem;
-  color: #2c3e50;
+.brand-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #0F172A;
   margin: 0;
+  line-height: 1.2;
 }
-
-.meeting-controls {
+.brand-sub {
+  font-size: 13px;
+  color: #64748B;
+  margin: 2px 0 0;
+}
+.field-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748B;
+  margin: 14px 0 6px;
+}
+.input-wrap {
+  position: relative;
+}
+.input-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #94A3B8;
+}
+.input-field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px 12px 38px;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  background: #F8FAFC;
+  font-size: 14px;
+  color: #0F172A;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.input-field:focus {
+  border-color: #2563EB;
+  background: #fff;
+}
+.mode-chips {
   display: flex;
-  gap: 12px;
   flex-wrap: wrap;
+  gap: 8px;
 }
-
-.control-button {
+.mode-chips.scroll {
+  overflow-x: auto;
+  margin-top: 10px;
+  flex-wrap: nowrap;
+  padding-bottom: 2px;
+}
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #E2E8F0;
+  background: #F8FAFC;
+  color: #475569;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+.mode-chip.active {
+  background: #EFF6FF;
+  border-color: #2563EB;
+  color: #2563EB;
+  font-weight: 600;
+}
+.join-button {
+  width: 100%;
+  height: 48px;
+  margin-top: 22px;
+  background: #2563EB;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 0.15s;
+}
+.join-button:hover {
+  background: #1D4ED8;
+}
+.join-button:disabled {
+  background: #CBD5E1;
+  cursor: not-allowed;
+}
+.error-pill {
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: 10px;
+  color: #B91C1C;
+  font-size: 13px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.3s;
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
-.control-button .icon {
-  font-size: 1.2rem;
+/* ── 会议室 ── */
+.meeting-room {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
-
-.control-button.share {
-  background-color: #2196F3;
-  color: white;
-}
-
-.control-button.share:hover {
-  background-color: #1976D2;
-}
-
-.control-button.stop {
-  background-color: #f44336;
-  color: white;
-}
-
-.control-button.stop:hover {
-  background-color: #d32f2f;
-}
-
-.control-button.leave {
-  background-color: #666;
-  color: white;
-}
-
-.control-button.leave:hover {
-  background-color: #555;
-}
-
-.video-grid {
+.main-content {
   flex: 1;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-  gap: 24px;
-  padding: 24px;
-  background-color: white;
-  border-radius: 12px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  padding: 16px;
+  gap: 16px;
+  min-height: 0;
 }
-
 .video-container {
+  flex: 1;
+  background: #0B1220;
+  border-radius: 16px;
   position: relative;
-  width: 100%;
-  aspect-ratio: 16/9;
-  background-color: #f8f9fa;
-  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  border: 1px solid #1E293B;
+  min-height: 0;
 }
-
-.video-container.is-sharing {
-  border: 2px solid #2196F3;
+.video-container.live {
+  border-color: rgba(37, 99, 235, 0.55);
 }
-
 video {
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
-
 .video-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background-color: #f8f9fa;
-}
-
-.no-video-text {
-  color: #666;
-  font-size: 1.1rem;
-}
-
-.hidden {
-  display: none;
-}
-
-.fullscreen-btn {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  background: rgba(33, 150, 243, 0.85);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 1rem;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.fullscreen-btn:hover {
-  background: #1976D2;
-}
-
-/* 声音模式选择 */
-.audio-mode-group {
+  inset: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.35);
 }
-.audio-mode-label {
-  font-size: 0.9rem;
-  color: #495057;
-  font-weight: 600;
+.video-overlay p {
+  margin: 0;
+  font-size: 14px;
 }
-.audio-mode-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.audio-mode-option {
+.live-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.9rem;
-  color: #2c3e50;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ADE80;
+}
+.fullscreen-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
   cursor: pointer;
 }
-.audio-mode-chip {
-  padding: 6px 12px;
-  border: 1px solid #cfd8dc;
-  border-radius: 16px;
+.fullscreen-btn:hover {
+  background: rgba(0, 0, 0, 0.6);
+}
+.users-panel {
+  width: 190px;
   background: #fff;
-  color: #455a64;
-  font-size: 0.85rem;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.05);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.users-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #64748B;
+  margin: 0 0 10px 4px;
+}
+.users-scroll {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #F8FAFC;
+  border-radius: 10px;
+  padding: 7px 9px;
+}
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #2563EB;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex: none;
+}
+.name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0F172A;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bottom-toolbar {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 12px 18px 14px;
+  box-shadow: 0 -6px 20px rgba(15, 23, 42, 0.06);
+}
+.toolbar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.room-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #EFF6FF;
+  color: #2563EB;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94A3B8;
+  background: #F1F5F9;
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.status-pill.live {
+  color: #16A34A;
+  background: #F0FDF4;
+}
+.status-pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 46px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.15s;
 }
-.audio-mode-chip.active {
-  background: #2196F3;
-  border-color: #2196F3;
-  color: #fff;
+.control-button.share {
+  flex: 1;
+  background: #2563EB;
 }
-.audio-mode-chip:hover {
-  border-color: #2196F3;
+.control-button.share:hover {
+  background: #1D4ED8;
 }
-
+.control-button.stop {
+  flex: 1;
+  background: #EF4444;
+}
+.control-button.stop:hover {
+  background: #DC2626;
+}
 .control-button.mic {
-  background-color: #ff9800;
-  color: white;
-}
-.control-button.mic.off {
-  background-color: #bdbdbd;
-  color: #fff;
+  flex: 1;
+  background: #F59E0B;
 }
 .control-button.mic:hover {
-  background-color: #f57c00;
+  background: #D97706;
+}
+.control-button.mic.off {
+  background: #94A3B8;
+}
+.control-button.leave {
+  background: #64748B;
+  flex: none;
+  min-width: 118px;
+}
+.control-button.leave:hover {
+  background: #475569;
 }
 
+/* ── 移动端 ── */
 @media (max-width: 800px) {
   .main-content {
     flex-direction: column;
+    padding: 12px;
+    gap: 12px;
   }
   .video-container {
-    width: 100% !important;
-    max-width: 100vw;
     aspect-ratio: 16/9;
-    margin-bottom: 16px;
+    flex: none;
   }
-  .users-list {
-    width: 100% !important;
-    border-left: none;
-    border-top: 1px solid #e9ecef;
-    padding: 12px 8px;
-    flex-direction: row;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    gap: 8px;
-  }
-  .user-avatar {
-    margin-bottom: 0;
-    margin-right: 12px;
+  .users-panel {
+    width: 100%;
+    flex: 1;
   }
   .bottom-toolbar {
-    padding: 10px 12px;
+    padding: 10px 12px 12px;
   }
-  .meeting-controls {
-    gap: 8px;
+  .controls {
+    flex-wrap: wrap;
   }
   .control-button {
-    padding: 8px 10px;
-    font-size: 0.9rem;
+    flex: 1 1 auto;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .control-button.leave {
+    min-width: 96px;
   }
 }
 </style>
