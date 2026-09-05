@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.cloudwebrtc.webrtc.FlutterWebRTCPlugin
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -217,7 +218,8 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 result.success(mapOf(
                     "outPeak" to mixProcessor.lastOutPeak,
                     "captureWrites" to mixProcessor.captureWrites,
-                    "mode" to mixProcessor.mode
+                    "mode" to mixProcessor.mode,
+                    "micFeed" to micFeedActive
                 ))
             }
             else -> result.notImplemented()
@@ -390,19 +392,172 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     /**
      * 声音模式生效:决定处理器模式与是否需要把 ADM 采集源换成系统内录。
      *
-     * 仅屏幕声音 + 内录活跃时 micBypassWanted=true,由采集线程回调完成换源;
-     * 处理器先维持 MODE_SCREEN(替换注入,换源未完成期间与旧行为一致,
-     * 保证无麦克风内容外泄),换源完成后由虚拟音源翻成 MODE_PASSTHROUGH。
+     * 仅屏幕声音与混合模式都走换源直供(micBypassWanted=true):虚拟源
+     * 直接交付最终上行(混合=系统内录+麦克风自采叠加),由采集线程回调
+     * 完成换源;处理器在换源未完成期间维持旧链路作为兜底(替换/软件注入),
+     * 换源完成后由虚拟音源翻成 MODE_PASSTHROUGH。
+     * 混合模式下同时启动麦克风自采线程,为虚拟源提供麦克风样本。
      */
     private fun applyAudioMode() {
-        micBypassWanted = requestedAudioMode == "screen" && audioCapturing
-        mixProcessor.mode = when (requestedAudioMode) {
-            "none" -> ScreenAudioMixProcessor.MODE_NONE
-            "screen" -> ScreenAudioMixProcessor.MODE_SCREEN
-            "mixed" -> ScreenAudioMixProcessor.MODE_MIXED
+        micBypassWanted =
+            (requestedAudioMode == "screen" || requestedAudioMode == "mixed") && audioCapturing
+        mixProcessor.virtualMixMic = requestedAudioMode == "mixed"
+        if (requestedAudioMode == "mixed" && audioCapturing) {
+            startMicFeed()
+        } else {
+            stopMicFeed()
+        }
+        mixProcessor.mode = when {
+            // 虚拟源已接管上行:缓冲内容即最终混音,处理链透传
+            micBypassWanted && virtualRecord != null ->
+                ScreenAudioMixProcessor.MODE_PASSTHROUGH
+            requestedAudioMode == "none" -> ScreenAudioMixProcessor.MODE_NONE
+            requestedAudioMode == "screen" -> ScreenAudioMixProcessor.MODE_SCREEN
+            requestedAudioMode == "mixed" -> ScreenAudioMixProcessor.MODE_MIXED
             else -> ScreenAudioMixProcessor.MODE_MIC
         }
         if (micBypassWanted) installAdmHook()
+    }
+
+    // ==== 混合模式麦克风自采线程 ====
+    // 换源后 ADM 不再读物理麦克风,混合模式所需的麦克风样本由本线程
+    // 独立采集(16k 单声道,与内录同格式,虚拟源在源级叠加)。
+    // 非阻塞读 + 轮询:阻塞式 read 在部分机型(MIUI 并发采集限制)会
+    // 永久挂起且无任何回调;持续无数据时自动轮换音频源重建录音器。
+    private var micFeedRecord: AudioRecord? = null
+    @Volatile private var micFeedActive = false
+    private val micFeedStarting = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun startMicFeed() {
+        if (!micFeedStarting.compareAndSet(false, true)) return
+        Thread {
+            try {
+                val sources = intArrayOf(
+                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                )
+                val minBuf = AudioRecord.getMinBufferSize(
+                    ScreenAudioMixProcessor.SRC_SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(2048)
+                val buf = ShortArray(1600) // 100ms
+                var sourceIdx = 0
+                var totalSamples = 0L
+                var lastDataAt = 0L
+                var loops = 0L
+                var rec: AudioRecord? = null
+
+                fun createRecorder(source: Int): AudioRecord? {
+                    return try {
+                        @SuppressLint("MissingPermission")
+                        val candidate = AudioRecord(
+                            source,
+                            ScreenAudioMixProcessor.SRC_SAMPLE_RATE,
+                            AudioFormat.CHANNEL_IN_MONO,
+                            AudioFormat.ENCODING_PCM_16BIT,
+                            minBuf * 4
+                        )
+                        if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                            candidate
+                        } else {
+                            try { candidate.release() } catch (_: Throwable) {}
+                            Log.w(TAG, "麦克风自采源 $source 初始化失败 state=${candidate.state}")
+                            null
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "麦克风自采源 $source 创建异常: ${t.message}")
+                        null
+                    }
+                }
+
+                try {
+                    rec = createRecorder(sources[sourceIdx])
+                    if (rec == null) {
+                        Log.w(TAG, "麦克风自采线程: 所有音频源创建失败,混合模式将只有屏幕内音")
+                        return@Thread
+                    }
+                    rec.startRecording()
+                    micFeedRecord = rec
+                    micFeedActive = true
+                    Log.i(TAG, "麦克风自采线程启动 source=${sources[sourceIdx]}")
+
+                    // 软件 AGC:原始麦克风电平通常远低于媒体声,叠加时会被掩盖。
+                    // 目标块峰值 14000(约 -7dBFS),增益上限 6 倍,峰值窗 ~0.5s
+                    // 衰减,增益平滑收敛避免忽大忽小。
+                    var agcGain = 3f
+                    var windowPeak = 0f
+                    val agcTarget = 14000f
+
+                    while (micFeedActive) {
+                        val n = try {
+                            rec!!.read(buf, 0, buf.size, AudioRecord.READ_NON_BLOCKING)
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "麦克风自采 read 异常", t)
+                            break
+                        }
+                        loops++
+                        val now = SystemClock.elapsedRealtime()
+                        if (n > 0) {
+                            totalSamples += n
+                            lastDataAt = now
+                            var blockPeak = 0
+                            for (i in 0 until n) {
+                                val a = Math.abs(buf[i].toInt())
+                                if (a > blockPeak) blockPeak = a
+                            }
+                            windowPeak = maxOf(blockPeak.toFloat(), windowPeak * 0.99f)
+                            val desired = (agcTarget / maxOf(windowPeak, 250f))
+                                .coerceIn(1f, 6f)
+                            agcGain += (desired - agcGain) * 0.06f
+                            if (agcGain > 1.02f) {
+                                for (i in 0 until n) {
+                                    buf[i] = (buf[i] * agcGain).toInt()
+                                        .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                                        .toShort()
+                                }
+                            }
+                            mixProcessor.writeMicSamples(buf, n)
+                        }
+                        if (loops % 50L == 0L) {
+                            Log.i(TAG, "麦克风自采: loops=$loops samples=$totalSamples " +
+                                    "lastRead=$n recState=${rec!!.recordingState} " +
+                                    "gain=${"%.2f".format(agcGain)} winPeak=${windowPeak.toInt()} " +
+                                    "micRing可用=${mixProcessor.micRing.available()}")
+                        }
+                        // 持续 3 秒无数据:换下一个音频源重建录音器
+                        if (lastDataAt in 1..(now - 3000)) {
+                            sourceIdx = (sourceIdx + 1) % sources.size
+                            Log.w(TAG, "麦克风自采 3 秒无数据,切换音频源 -> ${sources[sourceIdx]}")
+                            try { rec!!.stop() } catch (_: Throwable) {}
+                            try { rec!!.release() } catch (_: Throwable) {}
+                            rec = createRecorder(sources[sourceIdx])
+                            if (rec == null) {
+                                Log.w(TAG, "重建录音器失败,自采线程退出")
+                                break
+                            }
+                            rec!!.startRecording()
+                            micFeedRecord = rec
+                            lastDataAt = 0L
+                        }
+                        Thread.sleep(10)
+                    }
+                } finally {
+                    micFeedActive = false
+                    try { rec?.stop() } catch (_: Throwable) {}
+                    try { rec?.release() } catch (_: Throwable) {}
+                    micFeedRecord = null
+                    Log.w(TAG, "麦克风自采线程退出 loops=$loops samples=$totalSamples")
+                }
+            } finally {
+                micFeedStarting.set(false)
+            }
+        }.start()
+    }
+
+    private fun stopMicFeed() {
+        micFeedActive = false
+        // 录音器的 stop/release 在线程退出路径中执行,避免跨线程释放竞态
     }
 
     /** 轮询安装 ADM 采集源钩子(flutter_webrtc 可能晚于本插件初始化) */
@@ -590,6 +745,7 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         virtualRecord = null
         originalMicSaved = false
         micRestoreFailed = false
+        stopMicFeed()
         try {
             samplesRemoveMethod?.invoke(samplesAdapter, admSamplesHook)
         } catch (_: Throwable) {}

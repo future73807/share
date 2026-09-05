@@ -15,14 +15,15 @@ import java.nio.ByteBuffer
  *  - MODE_SCREEN     : 整体替换为屏幕内部声音(AudioPlaybackCapture 采集);
  *  - MODE_MIXED      : 麦克风 + 屏幕内部声音叠加(饱和截断);
  *  - MODE_NONE       : 全部置零(静音);
- *  - MODE_PASSTHROUGH: 透传。仅屏幕声音模式下 ADM 采集源已被换成
- *      VirtualAudioRecord(系统内录),缓冲内容本身就是屏幕声音,处理链
+ *  - MODE_PASSTHROUGH: 透传。换源模式(仅屏幕声音/混合)下 ADM 采集源已被
+ *      换成 VirtualAudioRecord——仅屏幕声音交付系统内录,混合交付
+ *      "系统内录+麦克风自采"的叠加,缓冲内容即为最终上行,处理链
  *      不得再消费环形缓冲(否则与虚拟音源双消费导致欠载)。
  *
- * 注意:麦克风轨道是所有模式的音频"载体"——包括仅屏幕声音模式
- * (屏幕内音经由该轨道送出),因此共享期间必须保持 getUserMedia 麦克风流
- * 处于活跃状态;但仅屏幕声音模式下物理麦克风会被 VirtualAudioRecord
- * 换源关掉,不会真正采集麦克风内容。
+ * 注意:麦克风轨道是所有模式的音频"载体"——共享期间必须保持
+ * getUserMedia 麦克风流处于活跃状态;但换源模式下物理麦克风由
+ * VirtualAudioRecord 接管(混合模式的麦克风内容来自插件自采线程),
+ * 软件注入链路仅作换源失败时的兜底。
  */
 class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcessing {
 
@@ -50,6 +51,13 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
 
     /** 屏幕音频环形缓冲(生产者:采集线程;消费者:WebRTC 音频线程) */
     val ring = RingBuffer(RING_CAPACITY)
+
+    /** 麦克风自采环形缓冲(混合模式换源时,VirtualAudioRecord 从这里取麦克风样本) */
+    val micRing = RingBuffer(RING_CAPACITY)
+
+    /** 混合模式虚拟源开关:true=虚拟音源交付时叠加 micRing(混合);false=仅屏幕内音 */
+    @Volatile
+    var virtualMixMic: Boolean = false
 
     // 目标(WebRTC 处理)采样率/声道,在 initialize 中回调给出
     private var targetRate = SRC_SAMPLE_RATE
@@ -83,6 +91,11 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
     /** 采集线程写入 PCM16 单声道样本 */
     fun writeCaptureSamples(buf: ShortArray, count: Int) {
         ring.write(buf, count)
+    }
+
+    /** 麦克风自采线程写入 PCM16 单声道样本(混合模式虚拟源用) */
+    fun writeMicSamples(buf: ShortArray, count: Int) {
+        micRing.write(buf, count)
     }
 
     /** 虚拟音源(VirtualAudioRecord)每次交付的上报:输出峰值 + 实际消费的内录样本数 */

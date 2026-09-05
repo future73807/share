@@ -14,10 +14,11 @@ import java.nio.ByteOrder
  * 并断言返回值等于缓冲容量;本类从系统内录环形缓冲
  * (ScreenAudioMixProcessor.ring,16k 单声道 PCM16)取数,分数累加 + 线性
  * 插值重采样到 ADM 的目标格式(bypassVoiceProcessing 下典型 48k 立体声),
- * 整块填满后原样返回。
+ * 整块填满后原样返回。混合模式下(virtualMixMic=true)在源级叠加
+ * micRing(插件自采线程写入的麦克风样本)后再重采样。
  *
- * 首次成功交付时把混音处理器从 MODE_SCREEN(替换)翻成 MODE_PASSTHROUGH,
- * 避免处理链再次消费同一环形缓冲(双消费会欠载变调)。
+ * 首次成功交付时把混音处理器从 MODE_SCREEN/MODE_MIXED 翻成
+ * MODE_PASSTHROUGH,避免处理链再次消费同一环形缓冲(双消费会欠载变调)。
  *
  * 注意:父类构造出的 AudioRecord(MIC 源)只是占位,从不 startRecording,
  * 不会点亮麦克风;真正数据源是插件内录线程喂的环形缓冲。
@@ -43,6 +44,7 @@ class VirtualAudioRecord(
     /** 跨块采样率换算累加器:每块消耗 源率/目标率*帧数 个源样本,分数部分累计 */
     private var srcAcc = 0.0
     private var scratch = ShortArray(8192)
+    private var micScratch = ShortArray(8192)
     private val srcRate = ScreenAudioMixProcessor.SRC_SAMPLE_RATE
 
     private val bytesPerFrame = 2 * targetChannels
@@ -99,6 +101,24 @@ class VirtualAudioRecord(
         val src = scratch
         val got = processor.ring.read(src, 0, take)
 
+        // 混合模式:叠加麦克风自采样本(同为 16k 单声道)。
+        // 软叠加公式 a+b∓a*b/32768:两路都大时平滑趋近满幅,不硬削波,
+        // 避免大音量媒体声把麦克风瞬间"压扁"。
+        if (processor.virtualMixMic) {
+            if (micScratch.size < take) micScratch = ShortArray(take)
+            processor.micRing.read(micScratch, 0, take)
+            for (i in 0 until take) {
+                val a = src[i].toInt()
+                val b = micScratch[i].toInt()
+                val sum = when {
+                    a > 0 && b > 0 -> a + b - a * b / 32768
+                    a < 0 && b < 0 -> a + b + a * b / 32768
+                    else -> a + b
+                }
+                src[i] = sum.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+        }
+
         val denom = (frames - 1).coerceAtLeast(1)
         var peak = 0
         buf.rewind()
@@ -114,8 +134,10 @@ class VirtualAudioRecord(
             for (c in 0 until targetChannels) buf.putShort(v.toShort())
         }
         processor.reportVirtualDelivery(peak, got)
-        // 换源完成后内容已是系统内音,处理链无需再做"替换"(避免双消费)
-        if (processor.mode == ScreenAudioMixProcessor.MODE_SCREEN) {
+        // 换源完成后内容即为最终上行,处理链无需再做替换/叠加(避免双消费)
+        if (processor.mode == ScreenAudioMixProcessor.MODE_SCREEN ||
+            processor.mode == ScreenAudioMixProcessor.MODE_MIXED
+        ) {
             processor.mode = ScreenAudioMixProcessor.MODE_PASSTHROUGH
         }
         if (diagBlocks++ % 500L == 0L) diagLog()
@@ -154,6 +176,20 @@ class VirtualAudioRecord(
         }
         if (scratch.size < sizeInShorts + 2) scratch = ShortArray(sizeInShorts + 2)
         val got = processor.ring.read(scratch, 0, sizeInShorts)
+        if (processor.virtualMixMic) {
+            if (micScratch.size < sizeInShorts) micScratch = ShortArray(sizeInShorts)
+            processor.micRing.read(micScratch, 0, sizeInShorts)
+            for (i in 0 until sizeInShorts) {
+                val a = scratch[i].toInt()
+                val b = micScratch[i].toInt()
+                val sum = when {
+                    a > 0 && b > 0 -> a + b - a * b / 32768
+                    a < 0 && b < 0 -> a + b + a * b / 32768
+                    else -> a + b
+                }
+                scratch[i] = sum.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+        }
         var peak = 0
         for (i in 0 until sizeInShorts) {
             val v = scratch[i]
