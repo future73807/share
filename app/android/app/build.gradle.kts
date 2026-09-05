@@ -35,10 +35,20 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // flutter_webrtc 的 JNI 依赖类名反射,混淆会导致运行时静默崩溃;
+            // 如需开启混淆,必须附加 -keep class com.cloudwebrtc.** / org.webrtc.** 规则
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // flutter_webrtc 以 implementation 依赖 webrtc SDK,不对外导出;
+    // 本应用插件实现其音频处理接口时需要同样的类路径
+    implementation("io.github.webrtc-sdk:android:125.6422.03")
 }

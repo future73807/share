@@ -1,93 +1,108 @@
 # 屏幕共享应用
 
-基于Vue 3和WebRTC技术构建的实时屏幕共享应用，支持多人在线会议和屏幕共享功能。
+多人在线房间 + 实时屏幕共享,支持声音分享模式选择与回声抑制。
 
-## 技术架构
+| 端 | 技术 | 位置 |
+|---|---|---|
+| 浏览器 Web 端 | Vue 3 + Vite + 浏览器原生 WebRTC | `src/`、`index.html` |
+| Android 手机端 | Flutter + flutter_webrtc | `app/` |
+| 信令服务器(两端共用) | Node.js + Socket.IO | `server.js` |
 
-- 前端框架：Vue 3 + Vite
-- 实时通信：Socket.IO
-- 媒体传输：WebRTC
-- 服务端：Express.js
+## 功能
 
-## 功能特点
-
-- 多人在线会议
-- 实时屏幕共享
-- 房间管理系统
-- 用户昵称显示
+- 多人房间:输入房间号/昵称加入,实时用户列表
+- 屏幕共享:手机端走系统 MediaProjection(系统授权弹窗 → 前台服务 → 采集),浏览器端走 `getDisplayMedia`
+- 声音分享模式(共享前可选、共享中可切换):
+  - 混合(屏幕+麦克风)
+  - 仅屏幕声音(手机端为系统内音采集,需 Android 10+)
+  - 仅麦克风
+  - 无声
+- 回声抑制:手机端麦克风走 VOICE_COMMUNICATION(硬件 AEC/NS/AGG),系统内音在原生层混入 WebRTC;浏览器端麦克风显式开启回声抑制/噪声抑制,共享时本地预览静音,避免二次采集回音
+- 手机端加入页可手输服务器地址(填一次记住),服务器换地址无需重新打包
 
 ## 环境要求
 
-- Node.js >= 14.0.0
-- npm >= 6.0.0
+- Node.js ≥ 14
+- 构建 Android 包:Flutter SDK(3.x)+ Android SDK,`app/android` 已关闭 R8 混淆(flutter_webrtc 的 JNI 依赖类名反射,混淆会导致运行时崩溃)
+- 屏幕内音采集:Android 10+(API 29)及以上
 
-## 依赖安装
+## 快速开始
 
-```bash
-npm install
-```
-
-## 网络配置
-
-### 本地开发环境
-
-默认情况下，应用使用以下网络配置：
-
-- 前端开发服务器：http://localhost:5173
-- 后端服务器：http://localhost:3000
-
-### 远程访问配置
-
-应用支持远程访问，配置步骤如下：
-
-1. 环境变量配置：
-   - 在项目根目录的 `.env` 文件中设置 `VITE_SERVER_URL` 为实际的服务器地址
-   - 例如：`VITE_SERVER_URL=http://your-server-ip:3000`
-
-2. 后端服务器配置：
-   - 服务器默认监听所有网络接口（0.0.0.0）
-   - 可通过环境变量 `PORT` 修改服务器端口
-   - 已配置CORS支持跨域访问
-
-3. 安全注意事项：
-   - 在生产环境中，建议配置适当的CORS策略
-   - 根据实际需求设置防火墙规则
-   - 使用HTTPS协议保护通信安全
-
-## 启动应用
-
-1. 启动后端服务器：
+### 常用命令速查
 
 ```bash
-node server.js
+# ── 后端(信令服务器,两种启动方式)──
+node server.js                      # 方式一:默认监听 0.0.0.0:3000
+PORT=31200 node server.js           # 方式二:自定义端口(Windows 下 3000 被占用/EACCES 时换端口)
+
+# ── Web 端 ──
+npm install                         # 首次安装依赖
+npx vite --port 8300                # 开发模式(热更新),浏览器开 http://localhost:8300
+npm run build                       # 构建产物到 dist/(连同 server.js 一起部署)
+
+# ── Android 端 ──
+cd app
+flutter pub get                     # 拉取依赖
+flutter build apk --release         # 正式包 → app/build/app/outputs/flutter-apk/app-release.apk
+flutter run                         # 调试运行(连接手机或模拟器)
 ```
 
-2. 启动前端开发服务器：
+### 1. 启动信令服务器
 
-```bash
-npm run dev
+启动后看到 `服务器运行在 http://0.0.0.0:<端口>` 即成功,该地址就是两端要填的"服务器地址"。
+
+### 2. 浏览器端
+
+浏览器打开 `http://localhost:8300/?server=http://<信令服务器地址>`(不带 `?server=` 时默认连当前域名同端口 3000)。页面填房间号/昵称 → 加入会议 → 分享屏幕。
+
+注意:浏览器的 `getDisplayMedia` 要求 HTTPS(`localhost` 例外)。
+
+### 3. Android 端
+
+安装到手机后:加入页填 **房间号 / 昵称 / 服务器地址**(如 `http://192.168.1.5:3000`,手机与服务器需在同一局域网;填一次记住)→ 加入会议 → 分享。
+
+模拟器联调:服务器地址填 `http://10.0.2.2:<端口>`(宿主机回环),Manifest 已开启 `usesCleartextTraffic` 允许 HTTP。
+
+## 信令协议(Socket.IO 事件)
+
+| 事件 | 方向 | 说明 |
+|---|---|---|
+| `join-room` | 客户端→服务器 | 携带 `roomId / nickname / client`(client: `web` 或 `flutter`) |
+| `room-users` | 服务器→客户端 | 房间成员 + 正在共享者列表 |
+| `user-joined` / `user-left` | 服务器→房间 | 成员进出 |
+| `start-sharing` / `share-started` | 双向 | 共享开始广播 |
+| `stop-sharing` / `share-stopped` | 双向 | 共享结束广播 |
+| `request-stream` | 观看者→共享者 | 携带请求端类型(服务器中继) |
+| `accept-stream` | 共享者→观看者 | 通知观看者主动发 Offer(Flutter 观看者作为 ICE 控制端,提升 NAT 穿透成功率) |
+| `offer` / `answer` / `ice-candidate` | 双向 | WebRTC 协商与候选(服务器按 `to` 中继) |
+
+连接模型:共享者与每个观众一条 PeerConnection;观看者在共享者之前入房时通过 `room-users`/`share-started` 补拉流(带去重);ICE 候选在对端连接建立前到达会先缓存、建立后回放。
+
+## 实现要点(踩坑记录)
+
+- **Android 14+ 屏幕采集时序**:必须"系统授权 → 启动 `foregroundServiceType=mediaProjection` 前台服务并完成 `startForeground` → `getMediaProjection`",顺序错误即 SecurityException 闪退;服务内对 `startForeground` 做了重试保护,且使用 `START_NOT_STICKY` 防止僵尸进程重启后无授权再次崩溃。
+- **权限**:Manifest 必须包含 `ACCESS_NETWORK_STATE`,否则 libwebrtc NetworkMonitor 会在原生层 SIGABRT(表现为建连后闪退)。
+- **R8 混淆**:release 默认混淆会破坏 flutter_webrtc JNI 反射(进程无崩溃日志静默退出),`app/android/app/build.gradle.kts` 中已关闭;如需开启必须附加 `-keep class com.cloudwebrtc.**` / `org.webrtc.**`。
+- **系统内音**:手机端用 `AudioPlaybackCapture` 采集,复用 flutter_webrtc 已授权的 MediaProjection(避免二次授权弹窗),经其 `capturePostProcessing` 音频处理钩子混入上行(`app/android/.../ScreenAudioMixProcessor.kt`)。
+- Flutter 端与 Web 端均为完整 WebRTC 实现:共享者推流给每个观众,观众也可反向上屏(网页共享 → 手机观看)。
+
+## 目录结构
+
+```
+├── server.js                  # 信令服务器(Express + Socket.IO)
+├── src/                       # Vue Web 端
+│   ├── main.js
+│   └── components/ScreenShare.vue
+├── index.html                 # Web 入口
+├── app/                       # Flutter Android 端
+│   ├── lib/main.dart
+│   ├── lib/screen_share_page.dart
+│   └── android/               # 原生层:ScreenSharePlugin(授权/前台服务/系统内音混音)
+└── out/                       # 本地产物(打包 APK 等,已 gitignore)
 ```
 
-## 打包部署
+## 常见问题
 
-1. 构建生产版本：
-
-```bash
-npm run build
-```
-
-2. 构建完成后，`dist` 目录包含以下文件：
-   - `index.html`：应用入口文件
-   - `assets/`：打包后的静态资源
-
-3. 部署说明：
-   - 将 `dist` 目录下的所有文件部署到 Web 服务器
-   - 确保后端服务器正常运行并可访问
-   - 根据实际部署环境修改前端连接地址
-
-## 使用说明
-
-1. 打开应用后，输入房间号和昵称加入会议
-2. 点击"开始共享屏幕"按钮开始分享
-3. 其他参会者可以实时查看共享的屏幕内容
-4. 点击"停止共享"或"离开房间"按钮结束会议
+- **手机连不上服务器**:检查手机与服务器是否同一局域网;地址要带端口;确认 `node server.js` 在跑。Windows 下若端口被系统保留(报 EACCES),换一个端口(如 `PORT=31200`)。
+- **点击分享后没弹授权框**:系统授权弹窗每次共享会话都会出现,属正常;若被"不再提示"过,去系统设置里重置该应用权限。
+- **观众画面黑屏/转圈**:确认观看者在共享者开始共享后仍在房间内;ICE 不通时优先检查两端网络(应用内置 Google/小米双 STUN)。

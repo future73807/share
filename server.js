@@ -14,14 +14,16 @@ const io = new Server(server, {
 // 存储房间信息和共享状态
 const rooms = new Map();
 const sharingUsers = new Map(); // 存储每个房间的共享用户列表
+const clientTypes = new Map(); // socketId -> 'web' | 'flutter'(用于 ICE 角色优化)
 
 io.on('connection', (socket) => {
   console.log('用户已连接:', socket.id);
 
   // 加入房间
-  socket.on('join-room', ({ roomId, nickname }) => {
+  socket.on('join-room', ({ roomId, nickname, client }) => {
     socket.join(roomId);
-    
+    clientTypes.set(socket.id, client === 'flutter' ? 'flutter' : 'web');
+
     // 存储用户信息
     if (!rooms.has(roomId)) {
       rooms.set(roomId, new Map());
@@ -43,7 +45,23 @@ io.on('connection', (socket) => {
     // 通知房间内其他用户有新用户加入
     socket.to(roomId).emit('user-joined', {
       socketId: socket.id,
-      nickname
+      nickname,
+      client: clientTypes.get(socket.id)
+    });
+  });
+
+  // 观看者向共享者请求流(带请求端类型,共享者据此决定应答方式)
+  socket.on('request-stream', ({ to }) => {
+    socket.to(to).emit('request-stream', {
+      from: socket.id,
+      clientType: clientTypes.get(socket.id) || 'web'
+    });
+  });
+
+  // 共享者通知观看者"请发你的 Offer"(观看者作为 Offer 端,优化移动端 ICE)
+  socket.on('accept-stream', ({ to }) => {
+    socket.to(to).emit('accept-stream', {
+      from: socket.id
     });
   });
 
@@ -108,7 +126,8 @@ io.on('connection', (socket) => {
   // 断开连接
   socket.on('disconnect', () => {
     console.log('用户已断开连接:', socket.id);
-    
+    clientTypes.delete(socket.id);
+
     // 清理房间信息
     rooms.forEach((users, roomId) => {
       if (users.has(socket.id)) {
