@@ -88,13 +88,19 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         val take = srcAcc.toInt().coerceAtLeast(2)
         srcAcc -= take
 
-        if (logTick++ % 100 == 0) {
-            Log.d("ScreenAudioMix", "mode=$mode take=$take ring可用=${ring.available()}")
-        }
-
         // 取源样本:缓冲不足时补零(表现为轻微静音间隙,优于变调)
         val src = ShortArray(take)
-        ring.read(src, 0, take)
+        val got = ring.read(src, 0, take)
+
+        // 每约 1 秒输出一次注入内容电平(峰值),用于确认采集到的是真实音频
+        if (logTick++ % 100 == 0) {
+            var peak = 0
+            for (i in 0 until got) {
+                val a = Math.abs(src[i].toInt())
+                if (a > peak) peak = a
+            }
+            Log.d("ScreenAudioMix", "mode=$mode take=$take got=$got 峰值=$peak ring可用=${ring.available()}")
+        }
 
         buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
         val denom = (numFrames - 1).coerceAtLeast(1)
