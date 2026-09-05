@@ -36,38 +36,26 @@ def gradient(size):
 
 
 def draw_glyph(draw, s, k=1.0, color=WHITE):
-    """白色图形:Material Icons `screen_share` 样式。
-    显示器(描边圆角矩形) + 底座,右上角两道弧形共享波纹 + 实心圆点。"""
+    """白色图形:笔记本电脑侧视,屏幕内有向右共享箭头(品牌 logo)。"""
     def u(x, y):
         off = s * (1 - k) / 2
         return (off + x * s * k, off + y * s * k)
 
-    sw = max(3, int(0.05 * s * k))
+    sw = max(3, int(0.048 * s * k))
 
-    # ── 显示器主体:描边圆角矩形(0.16,0.24)-(0.84,0.74) ──
-    draw.rounded_rectangle([u(0.16, 0.24), u(0.84, 0.74)],
-                           radius=0.045 * s * k, outline=color, width=sw)
+    # ── 屏幕:描边圆角矩形 ──
+    draw.rounded_rectangle([u(0.24, 0.20), u(0.76, 0.60)],
+                           radius=0.035 * s * k, outline=color, width=sw)
 
-    # ── 底座:竖颈 + 横条 ──
-    neck_w = 0.10 * s * k
-    draw.rounded_rectangle([u(0.5 - neck_w / 2 / s, 0.74),
-                            u(0.5 + neck_w / 2 / s, 0.84)],
-                           radius=0.015 * s * k, fill=color)
-    draw.rounded_rectangle([u(0.30, 0.84), u(0.70, 0.92)],
-                           radius=0.03 * s * k, fill=color)
+    # ── 屏幕内向右共享箭头(实心:杆 + 三角头) ──
+    draw.rounded_rectangle([u(0.34, 0.355), u(0.50, 0.445)],
+                           radius=0.02 * s * k, fill=color)
+    draw.polygon([u(0.49, 0.30), u(0.49, 0.50), u(0.635, 0.40)], fill=color)
 
-    # ── 右上角共享波纹:两段圆弧(圆心在显示器右上角内侧) ──
-    # Material screen_share 的波纹是从显示器右上角向外发散的两条弧
-    cx, cy = u(0.70, 0.30)
-    for rr_frac, w_frac in ((0.155, 0.035), (0.245, 0.045)):
-        rr = rr_frac * s * k
-        wd = max(3, int(w_frac * s * k))
-        # 弧从 -80° 到 10°(右上象限,向右上发散)
-        box = [cx - rr, cy - rr, cx + rr, cy + rr]
-        draw.arc(box, start=278, end=8, fill=color, width=wd)
-    # 波纹起点的小实心圆点
-    dot_r = 0.030 * s * k
-    draw.ellipse([cx - dot_r, cy - 2.2 * dot_r, cx + dot_r, cy], fill=color)
+    # ── 底座:实心梯形(左低右高微透视,简化为圆角矩形) ──
+    draw.polygon([u(0.30, 0.62), u(0.70, 0.62), u(0.76, 0.72), u(0.24, 0.72)],
+                 fill=color)
+
 
 def make_legacy(size):
     """完整方形图标(圆角),用于 API<26 启动器与 Web favicon。"""

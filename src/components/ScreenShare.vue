@@ -4,7 +4,15 @@
     <div v-if="!isInRoom" class="join-wrap">
       <div class="join-layout">
         <div class="join-hero">
-          <div class="hero-icon"><MonitorUp :size="42" /></div>
+          <div class="hero-icon">
+            <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true">
+              <rect x="5.8" y="4.8" width="12.4" height="9.6" rx="0.9"
+                    fill="none" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="8.2" y="8.5" width="3.8" height="2.2" rx="0.5" fill="currentColor"/>
+              <polygon points="11.8,7.2 11.8,12 15.3,9.6" fill="currentColor"/>
+              <polygon points="7.2,14.9 16.8,14.9 18.3,17.3 5.7,17.3" fill="currentColor"/>
+            </svg>
+          </div>
           <h1 class="hero-title">屏幕共享</h1>
           <p class="hero-sub">把手机或电脑屏幕,连同声音,实时分享给房间里的每一个人</p>
           <ul class="hero-feats">
@@ -16,7 +24,15 @@
         </div>
         <div class="join-card">
         <div class="brand-header">
-          <div class="brand-icon"><MonitorUp :size="26" /></div>
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+              <rect x="5.8" y="4.8" width="12.4" height="9.6" rx="0.9"
+                    fill="none" stroke="currentColor" stroke-width="1.3"/>
+              <rect x="8.2" y="8.5" width="3.8" height="2.2" rx="0.5" fill="currentColor"/>
+              <polygon points="11.8,7.2 11.8,12 15.3,9.6" fill="currentColor"/>
+              <polygon points="7.2,14.9 16.8,14.9 18.3,17.3 5.7,17.3" fill="currentColor"/>
+            </svg>
+          </div>
           <div>
             <h2 class="brand-title">屏幕共享</h2>
             <p class="brand-sub">实时画面 · 声音共享</p>
@@ -797,6 +813,12 @@ onUnmounted(() => {
   width: 48px;
   height: 48px;
   border-radius: 14px;
+  background: #2563EB;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
 }
 .brand-title {
   font-size: 22px;
