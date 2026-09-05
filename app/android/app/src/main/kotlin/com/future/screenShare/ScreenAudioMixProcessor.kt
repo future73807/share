@@ -52,6 +52,16 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
     private var srcAcc = 0.0
     private var logTick = 0
 
+    /** 最近一块送入编码的音频峰值(0..32767),供 UI 电平条轮询 */
+    @Volatile
+    var lastOutPeak: Int = 0
+        private set
+
+    /** 最近约 1 秒采集线程写入的样本数累计(Dart 侧用差值判断是否有数据) */
+    @Volatile
+    var captureWrites: Int = 0
+        private set
+
     override fun initialize(sampleRateHz: Int, numChannels: Int) {
         targetRate = if (sampleRateHz > 0) sampleRateHz else SRC_SAMPLE_RATE
         targetChannels = if (numChannels > 0) numChannels else 1
@@ -69,6 +79,9 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
     }
 
     override fun process(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
+        if (logTick < 3) {
+            Log.d("ScreenAudioMix", "process 被调用 #$logTick mode=$mode frames=$numFrames")
+        }
         when (mode) {
             MODE_MIC -> return
             MODE_NONE -> {
@@ -92,15 +105,18 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         val src = ShortArray(take)
         val got = ring.read(src, 0, take)
 
-        // 每约 1 秒输出一次注入内容电平(峰值),用于确认采集到的是真实音频
-        if (logTick++ % 100 == 0) {
-            var peak = 0
-            for (i in 0 until got) {
-                val a = Math.abs(src[i].toInt())
-                if (a > peak) peak = a
-            }
-            Log.d("ScreenAudioMix", "mode=$mode take=$take got=$got 峰值=$peak ring可用=${ring.available()}")
+        // 统计源电平(屏幕内音采集到的真实强度)与输出电平(送入编码的强度)
+        var inPeak = 0
+        var outPeak = 0
+        for (i in 0 until got) {
+            val a = Math.abs(src[i].toInt())
+            if (a > inPeak) inPeak = a
         }
+        if (logTick++ % 100 == 0) {
+            Log.d("ScreenAudioMix",
+                "mode=$mode take=$take got=$got 源峰值=$inPeak ring可用=${ring.available()}")
+        }
+        captureWrites += got
 
         buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
         val denom = (numFrames - 1).coerceAtLeast(1)
@@ -112,20 +128,22 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
                 val frac = (pos - i0).toFloat()
                 val i1 = (i0 + 1).coerceAtMost(take - 1)
                 var v = src[i0] * (1f - frac) + src[i1] * frac
+                var out = 0
                 if (mode == MODE_MIXED) {
                     val p = buffer.position()
                     val mic = buffer.getShort(p).toInt()
-                    val mixed = (mic + v.toInt())
+                    out = (mic + v.toInt())
                         .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                    buffer.putShort(p, mixed.toShort())
+                    buffer.putShort(p, out.toShort())
                     buffer.position(p + 2)
                 } else { // MODE_SCREEN:整体替换
-                    val out = v.toInt()
-                        .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                    buffer.putShort(out.toShort())
+                    buffer.putShort(out.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
                 }
+                val abs = Math.abs(out)
+                if (abs > outPeak) outPeak = abs
             }
         }
+        lastOutPeak = outPeak
     }
 
     /** 简单的 PCM16 环形缓冲 */

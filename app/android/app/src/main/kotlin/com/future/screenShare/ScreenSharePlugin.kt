@@ -69,6 +69,13 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        // 关键:从 flutter_webrtc 的处理链摘除混音器,否则引擎重建后
+        // 会重复注册多个实例,环形缓冲被成倍消耗导致屏幕内音丢失
+        try {
+            FlutterWebRTCPlugin.sharedSingleton?.audioProcessingController
+                ?.capturePostProcessing?.removeProcessor(mixProcessor)
+        } catch (_: Throwable) {}
+        mixProcessor.registered = false
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -167,6 +174,14 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 stopAudioCaptureInternal(releaseOwnProjection = true)
                 result.success(null)
             }
+            "getAudioMixLevel" -> {
+                // 供 UI 电平条轮询:outPeak=送入编码的音频峰值,captureWrites=屏幕内音采集累计样本
+                result.success(mapOf(
+                    "outPeak" to mixProcessor.lastOutPeak,
+                    "captureWrites" to mixProcessor.captureWrites,
+                    "mode" to mixProcessor.mode
+                ))
+            }
             else -> result.notImplemented()
         }
     }
@@ -177,17 +192,40 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
      *      -> getCapturerInfo(trackId).capturer -> mediaProjection 字段。
      */
     private fun findFlutterWebrtcProjection(trackId: String): MediaProjection? {
-        if (trackId.isEmpty()) return null
+        if (trackId.isEmpty()) {
+            Log.w(TAG, "复用投影失败: trackId 为空")
+            return null
+        }
         return try {
-            val singleton = FlutterWebRTCPlugin.sharedSingleton ?: return null
+            val singleton = FlutterWebRTCPlugin.sharedSingleton
+            if (singleton == null) {
+                Log.w(TAG, "复用投影失败: flutter_webrtc 插件未初始化")
+                return null
+            }
             val mch = singleton.javaClass.getDeclaredField("methodCallHandler")
-                .apply { isAccessible = true }.get(singleton) ?: return null
+                .apply { isAccessible = true }.get(singleton)
+            if (mch == null) {
+                Log.w(TAG, "复用投影失败: methodCallHandler 为空")
+                return null
+            }
             val gum = mch.javaClass.getDeclaredField("getUserMediaImpl")
-                .apply { isAccessible = true }.get(mch) ?: return null
+                .apply { isAccessible = true }.get(mch)
+            if (gum == null) {
+                Log.w(TAG, "复用投影失败: getUserMediaImpl 为空")
+                return null
+            }
             val info = gum.javaClass
                 .getMethod("getCapturerInfo", String::class.java)
-                .invoke(gum, trackId) ?: return null
-            val capturer = info.javaClass.getField("capturer").get(info) ?: return null
+                .invoke(gum, trackId)
+            if (info == null) {
+                Log.w(TAG, "复用投影失败: 找不到轨道 $trackId 的采集信息")
+                return null
+            }
+            val capturer = info.javaClass.getField("capturer").get(info)
+            if (capturer == null) {
+                Log.w(TAG, "复用投影失败: capturer 为空")
+                return null
+            }
             var c: Class<*>? = capturer.javaClass
             while (c != null) {
                 val f = try {
@@ -197,10 +235,13 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 }
                 if (f != null) {
                     f.isAccessible = true
-                    return f.get(capturer) as? MediaProjection
+                    val mp = f.get(capturer) as? MediaProjection
+                    if (mp == null) Log.w(TAG, "复用投影失败: mediaProjection 字段为空")
+                    return mp
                 }
                 c = c.superclass
             }
+            Log.w(TAG, "复用投影失败: ${capturer.javaClass.name} 无 mediaProjection 字段")
             null
         } catch (t: Throwable) {
             Log.w(TAG, "复用 flutter_webrtc MediaProjection 失败: ${t.message}")

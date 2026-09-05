@@ -658,6 +658,14 @@ onMounted(() => {
     roomId.value = savedRoomId
     nickname.value = savedNickname
     joinRoom()
+    return
+  }
+  // 观看链接:?autoviewer=房间号 —— 打开即以随机昵称自动入房观看
+  const autoViewer = new URLSearchParams(window.location.search).get('autoviewer')
+  if (autoViewer) {
+    roomId.value = autoViewer
+    nickname.value = 'Viewer-' + Math.random().toString(36).slice(2, 6)
+    joinRoom()
   }
 })
 

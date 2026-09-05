@@ -67,6 +67,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   bool _renderersInitialized = false;
   bool _startingShare = false;
+  Timer? _levelTimer;
+  double _audioLevel = 0;
+  int _lastCaptureWrites = 0;
+  bool _screenCaptureAlive = false;
 
   @override
   void initState() {
@@ -99,6 +103,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   @override
   void dispose() {
+    _levelTimer?.cancel();
     _roomController.dispose();
     _nickController.dispose();
     _serverController.dispose();
@@ -542,11 +547,14 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   Future<void> _startSharingInternal() async {
     try {
-      // 1. 麦克风权限(任何模式都需要:麦克风轨道是声音的"载体",
-      //    仅屏幕声音模式的系统内音也经该轨道的处理链送出)
-      final micGranted = await _ensureMicPermission();
-      if (!micGranted) {
-        _toast('未授予麦克风权限,将无法发送声音');
+      // 1. 麦克风权限(无声模式不需要;其余模式必须——安卓上任何声音
+      //    [含屏幕内音] 都经 flutter_webrtc 的麦克风通道送出)
+      if (audioMode != audioModeNone) {
+        final micGranted = await _ensureMicPermission();
+        if (!micGranted) {
+          _toast('未授予麦克风权限,无法发送声音');
+          return;
+        }
       }
 
       // 2. 系统授权弹窗(单个会话一次授权)
@@ -568,18 +576,20 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       });
       final videoTracks = screenStream!.getVideoTracks();
 
-      // 5. 麦克风流(带回声抑制/噪声抑制/自动增益)
+      // 5. 麦克风流(所有声音模式的音频载体;无声模式跳过)
       MediaStream? mic;
-      try {
-        mic = await navigator.mediaDevices.getUserMedia({
-          'audio': {
-            'echoCancellation': true,
-            'noiseSuppression': true,
-            'autoGainControl': true,
-          }
-        });
-      } catch (e) {
-        debugPrint('麦克风获取失败: $e');
+      if (audioMode != audioModeNone) {
+        try {
+          mic = await navigator.mediaDevices.getUserMedia({
+            'audio': {
+              'echoCancellation': true,
+              'noiseSuppression': true,
+              'autoGainControl': true,
+            }
+          });
+        } catch (e) {
+          debugPrint('麦克风获取失败: $e');
+        }
       }
       micStream = mic;
 
@@ -615,6 +625,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       if (!screenAudioActive &&
           (nativeMode == 'mixed' || nativeMode == 'screen')) {
         nativeMode = (mic != null) ? 'mic' : 'none';
+        _toast('屏幕内音采集失败,本次将以麦克风声音共享');
       }
       await _channel.invokeMethod('setAudioShareMode', {'mode': nativeMode});
 
@@ -629,6 +640,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       _localRenderer.srcObject = publish;
 
       if (mounted) setState(() => isSharing = true);
+      _levelTimer?.cancel();
+      _lastCaptureWrites = 0;
+      _levelTimer = Timer.periodic(
+          const Duration(milliseconds: 400), (_) => _pollLevel());
       socket?.emit('start-sharing');
 
       // 向房间内已有观众推送(覆盖 room-users 时序)
@@ -659,6 +674,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   }
 
   Future<void> _cleanupShare() async {
+    _levelTimer?.cancel();
+    if (mounted) setState(() => _audioLevel = 0);
     try {
       await _channel.invokeMethod('stopAllCapture');
     } catch (_) {}
@@ -698,6 +715,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   /// 共享中切换声音模式
   Future<void> setAudioMode(String mode) async {
+    if (micStream == null && mode != audioModeNone) {
+      _toast('麦克风不可用,无法切换到声音模式');
+      return;
+    }
     setState(() => audioMode = mode);
     if (!isSharing) return;
 
@@ -756,6 +777,22 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     // 重新连接 socket 以便下次加入
     socket?.connect();
+  }
+
+  /// 轮询原生混音电平(供 UI 电平条显示,便于现场判断声音是否在发)
+  Future<void> _pollLevel() async {
+    if (!isSharing) return;
+    try {
+      final r = await _channel.invokeMethod('getAudioMixLevel');
+      final outPeak = (r['outPeak'] as num?)?.toInt() ?? 0;
+      final cw = (r['captureWrites'] as num?)?.toInt() ?? 0;
+      if (!mounted) return;
+      setState(() {
+        _audioLevel = (outPeak / 32767).clamp(0.0, 1.0);
+        _screenCaptureAlive = cw != _lastCaptureWrites;
+        _lastCaptureWrites = cw;
+      });
+    } catch (_) {}
   }
 
   void _toast(String msg) {
@@ -1326,6 +1363,41 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                       return _modeChip(m['value']!, _shortModeLabel(m['value']!),
                           onTap: () => setAudioMode(m['value']!));
                     })),
+            const SizedBox(height: 10),
+            Row(children: [
+              const SizedBox(
+                  width: 40,
+                  child: Text('声音',
+                      style: TextStyle(fontSize: 12, color: _sub))),
+              const SizedBox(width: 4),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: _audioLevel,
+                    minHeight: 8,
+                    backgroundColor: const Color(0xFFE2E8F0),
+                    valueColor: const AlwaysStoppedAnimation<Color>(
+                        Color(0xFF2563EB)),
+                  ),
+                ),
+              ),
+            ]),
+            if ((audioMode == audioModeMixed ||
+                    audioMode == audioModeScreen) &&
+                !_screenCaptureAlive)
+              Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        size: 14, color: Color(0xFFD97706)),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                        child: Text(
+                            '屏幕内音无数据:正在播放的应用可能禁止了声音采集,或当前没有播放任何声音',
+                            style: TextStyle(
+                                fontSize: 12, color: Color(0xFFD97706)))),
+                  ])),
           ],
           const SizedBox(height: 12),
           Row(children: [
