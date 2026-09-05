@@ -793,16 +793,20 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     socket?.connect();
   }
 
-  /// 轮询原生混音电平(供 UI 电平条显示,便于现场判断声音是否在发)
+  /// 轮询原生混音电平(供 UI 电平条显示,便于现场判断声音是否在发)。
+  /// 采集存活判定用 captureWrites(内录线程"产出"计数,与有无观众无关);
+  /// 电平条取 发送峰值/采集原始峰值 的较大者,单人无观众时也能看到采集电平。
   Future<void> _pollLevel() async {
     if (!isSharing) return;
     try {
       final r = await _channel.invokeMethod('getAudioMixLevel');
       final outPeak = (r['outPeak'] as num?)?.toInt() ?? 0;
+      final capturePeak = (r['capturePeak'] as num?)?.toInt() ?? 0;
       final cw = (r['captureWrites'] as num?)?.toInt() ?? 0;
       if (!mounted) return;
+      final level = (outPeak >= capturePeak ? outPeak : capturePeak) / 32767;
       setState(() {
-        _audioLevel = (outPeak / 32767).clamp(0.0, 1.0);
+        _audioLevel = level.clamp(0.0, 1.0);
         _screenCaptureAlive = cw != _lastCaptureWrites;
         _lastCaptureWrites = cw;
       });

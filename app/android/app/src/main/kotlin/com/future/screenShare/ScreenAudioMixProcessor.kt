@@ -71,8 +71,15 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
     var lastOutPeak: Int = 0
         private set
 
-    /** 送入编码的内录样本数累计(Dart 侧用差值判断屏幕内音是否有数据)。
-     *  软件替换链路由 process() 累加;换源后由 VirtualAudioRecord 交付时上报。 */
+    /** 最近一块内录采集的原始峰值(0..32767):无人观看时电平条用它与 lastOutPeak 取大 */
+    @Volatile
+    var capturePeak: Int = 0
+        private set
+
+    /** 内录采集线程产出的样本数累计(Dart 侧用差值判断采集是否存活)。
+     *  注意:计数的是"生产"而非"消费"——消费依赖 WebRTC 会话,房间无观众时
+     *  采集循环不运行,按消费计数会把正常共享误报为"屏幕内音无数据";
+     *  内录线程独立于观众,只要手机在放声音就有产出。 */
     @Volatile
     var captureWrites: Int = 0
         private set
@@ -88,9 +95,16 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         srcAcc = 0.0
     }
 
-    /** 采集线程写入 PCM16 单声道样本 */
+    /** 采集线程写入 PCM16 单声道样本(生产侧:这里计数,与观众有无无关) */
     fun writeCaptureSamples(buf: ShortArray, count: Int) {
         ring.write(buf, count)
+        var p = 0
+        for (i in 0 until count) {
+            val a = Math.abs(buf[i].toInt())
+            if (a > p) p = a
+        }
+        capturePeak = p
+        captureWrites += count
     }
 
     /** 麦克风自采线程写入 PCM16 单声道样本(混合模式虚拟源用) */
@@ -98,10 +112,9 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
         micRing.write(buf, count)
     }
 
-    /** 虚拟音源(VirtualAudioRecord)每次交付的上报:输出峰值 + 实际消费的内录样本数 */
-    fun reportVirtualDelivery(peak: Int, consumed: Int) {
+    /** 虚拟音源(VirtualAudioRecord)交付的上报:送入编码的峰值(电平条用) */
+    fun reportVirtualDelivery(peak: Int) {
         lastOutPeak = peak
-        captureWrites += consumed
     }
 
     override fun process(numBands: Int, numFrames: Int, buffer: ByteBuffer) {
@@ -143,7 +156,6 @@ class ScreenAudioMixProcessor : AudioProcessingAdapter.ExternalAudioFrameProcess
             Log.d("ScreenAudioMix",
                 "mode=$mode take=$take got=$got 源峰值=$inPeak ring可用=${ring.available()}")
         }
-        captureWrites += got
 
         buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
         val denom = (numFrames - 1).coerceAtLeast(1)

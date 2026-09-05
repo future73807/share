@@ -133,7 +133,7 @@ class VirtualAudioRecord(
             if (abs > peak) peak = abs
             for (c in 0 until targetChannels) buf.putShort(v.toShort())
         }
-        processor.reportVirtualDelivery(peak, got)
+        processor.reportVirtualDelivery(peak)
         // 换源完成后内容即为最终上行,处理链无需再做替换/叠加(避免双消费)
         if (processor.mode == ScreenAudioMixProcessor.MODE_SCREEN ||
             processor.mode == ScreenAudioMixProcessor.MODE_MIXED
@@ -197,7 +197,7 @@ class VirtualAudioRecord(
             if (abs > peak) peak = abs
             out[offsetInShorts + i] = v
         }
-        processor.reportVirtualDelivery(peak, got)
+        processor.reportVirtualDelivery(peak)
         if (processor.mode == ScreenAudioMixProcessor.MODE_SCREEN) {
             processor.mode = ScreenAudioMixProcessor.MODE_PASSTHROUGH
         }

@@ -217,6 +217,7 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             "getAudioMixLevel" -> {
                 result.success(mapOf(
                     "outPeak" to mixProcessor.lastOutPeak,
+                    "capturePeak" to mixProcessor.capturePeak,
                     "captureWrites" to mixProcessor.captureWrites,
                     "mode" to mixProcessor.mode,
                     "micFeed" to micFeedActive
