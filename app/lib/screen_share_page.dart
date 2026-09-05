@@ -603,15 +603,19 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
               {'trackId': videoTracks.first.id});
           screenAudioActive = ok == true;
         } on PlatformException catch (e) {
+          debugPrint('系统音频采集失败: ${e.code} ${e.message}');
           if (e.code == 'NEED_PROJECTION') {
             // 无法复用投影:走插件自建授权(第二次系统弹窗)
             final ok = ((await _channel
                 .invokeMethod('startAudioProjectionFallback')) as bool?) ?? false;
             screenAudioActive = ok;
+            if (!ok) _toast('屏幕内音授权失败,已切换为仅麦克风声音');
           } else if (e.code == 'UNSUPPORTED') {
             _toast('当前系统版本不支持采集屏幕内部声音');
+            screenAudioActive = false;
           } else {
-            debugPrint('系统音频采集失败: ${e.code} ${e.message}');
+            _toast('屏幕内音采集失败(${e.code}),已切换为仅麦克风声音');
+            screenAudioActive = false;
           }
         }
       }
@@ -737,7 +741,9 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             final ok = ((await _channel
                 .invokeMethod('startAudioProjectionFallback')) as bool?) ?? false;
             screenAudioActive = ok;
+            if (!ok) _toast('屏幕内音授权失败,已切换为仅麦克风声音');
           } else {
+            _toast('屏幕内音采集失败(${e.code})');
             screenAudioActive = false;
           }
         }

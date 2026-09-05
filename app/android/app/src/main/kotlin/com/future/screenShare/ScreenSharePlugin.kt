@@ -294,25 +294,44 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
         audioRecord = record
         capturing = true
-        record.startRecording()
+        val recState = record.state
+        val started = record.startRecording()
+        val recStateAfter = record.recordingState
+        Log.i(TAG, "系统音频采集启动: AudioRecord.state=$recState($recStateAfter) " +
+                "rate=${ScreenAudioMixProcessor.SRC_SAMPLE_RATE} ownedByPlugin=$ownedByPlugin " +
+                "projectId=${projection.hashCode()}")
         captureExecutor.execute {
             val buf = ShortArray(2048)
+            var readCalls = 0L
+            var totalSamples = 0L
+            var lastLog = System.currentTimeMillis()
             while (capturing) {
                 val n = try {
                     record.read(buf, 0, buf.size)
                 } catch (t: Throwable) {
+                    Log.e(TAG, "AudioRecord.read 异常", t)
                     break
+                }
+                totalSamples += if (n > 0) n.toLong() else 0
+                readCalls++
+                val now = System.currentTimeMillis()
+                if (now - lastLog >= 1000) {
+                    // 每秒一次:读调用数、累计样本、录制状态——静音/无数据时看这里定位
+                    Log.i(TAG, "音频采集: reads=$readCalls samples=$totalSamples " +
+                            "recState=${record.recordingState} lastRead=$n")
+                    lastLog = now
                 }
                 if (n > 0) {
                     mixProcessor.writeCaptureSamples(buf, n)
                 } else if (n < 0) {
+                    Log.e(TAG, "AudioRecord.read 返回 $n,停止采集")
                     break
                 }
             }
+            Log.w(TAG, "系统音频采集线程退出 (capturing=$capturing)")
             try { record.stop() } catch (_: Throwable) {}
             try { record.release() } catch (_: Throwable) {}
         }
-        Log.i(TAG, "系统音频采集已启动 (ownedByPlugin=$ownedByPlugin)")
     }
 
     private fun stopAudioCaptureInternal(releaseOwnProjection: Boolean) {
