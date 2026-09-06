@@ -965,9 +965,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   @override
   Widget build(BuildContext context) {
+    // 不用顶层 SafeArea:去掉顶部安全区,内容延伸到透明状态栏底下。
+    // 房间页自己用状态栏高度做顶部留白(全屏时为 0,视频真正铺满)。
     return Scaffold(
       backgroundColor: const Color(0xFFF1F5F9),
-      body: SafeArea(child: !isInRoom ? _buildJoinForm() : _buildMeetingRoom()),
+      body: !isInRoom ? _buildJoinForm() : _buildMeetingRoom(),
     );
   }
 
@@ -1209,13 +1211,17 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   }
 
   Widget _buildMeetingRoom() {
+    // 顶部留白 = 状态栏高度(全屏时为 0,视频延伸到屏幕最顶端,
+    // 去掉顶部安全区白条);加入表单页内容居中,不受影响。
+    final topInset = isFullScreen
+        ? 0.0
+        : (MediaQuery.of(context).padding.top + 6.0);
     return Column(children: [
       Expanded(
         child: isFullScreen
             ? _buildVideoArea()
             : Padding(
-                // 底部留出与工具栏之间的空隙
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                padding: EdgeInsets.fromLTRB(12, topInset, 12, 12),
                 child: Row(children: [
                   Expanded(flex: 3, child: _buildVideoArea()),
                   const SizedBox(width: 12),
@@ -1323,8 +1329,9 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                               fontWeight: FontWeight.w600)),
                     ]))),
           Positioned(
-              top: 8,
-              right: 8,
+              // 全屏时离屏幕边缘稍远:避开挖孔/手势区,保证按钮可点击
+              top: isFullScreen ? 18 : 8,
+              right: isFullScreen ? 18 : 8,
               child: Row(children: [
                 // 旋转画面:每按一次顺时针 90°(0/90/180/270 循环)
                 if (live)
