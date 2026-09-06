@@ -533,11 +533,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   // ============ 屏幕共享 ============
 
-  /// 屏幕共享视频发送参数。flutter_webrtc 默认以全屏分辨率(如 1080x2400@30)
-  /// 采集,而发送码率用 WebRTC 默认低值:带宽一波动,编码器就不停
-  /// 降/升分辨率——表现为画面闪烁与忽清忽糊;帧队列堆积则延迟越来越高。
-  /// 这里固定分辨率(maintain-resolution,只降帧不降分辨率)+ 足量码率
-  /// + 限 15fps,画质稳定、延迟可控。
+  /// 屏幕共享视频发送参数。flutter_webrtc 默认发送码率用 WebRTC 低默认值:
+  /// 带宽一波动编码器就不停降/升分辨率——表现为闪烁与忽清忽糊,帧队列
+  /// 堆积则延迟越来越高。这里固定分辨率(maintain-resolution,只降帧不降
+  /// 分辨率)+ 足量码率(6M,1080x2400 高码屏内容够用)+ 帧率上限 25,
+  /// 画质稳定、动画流畅、延迟可控。
   Future<void> _applyScreenSenderParams(RTCPeerConnection pc) async {
     try {
       final senders = await pc.getSenders();
@@ -549,8 +549,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             RTCDegradationPreference.MAINTAIN_RESOLUTION;
         final encodings = params.encodings;
         if (encodings != null && encodings.isNotEmpty) {
-          encodings.first.maxBitrate = 4000000;
-          encodings.first.maxFramerate = 15;
+          encodings.first.maxBitrate = 6000000;
+          encodings.first.maxFramerate = 25;
         }
         await sender.setParameters(params);
       }
@@ -624,8 +624,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       debugPrint('前台服务就绪: ${serviceOk ?? false}');
 
       // 4. 获取屏幕视频流(授权已缓存,不会再弹第二次)
+      // 4. 获取屏幕视频流(授权已缓存,不会再弹第二次)。
+      //    显式约束帧率 30:屏幕滚动/动画才流畅;分辨率交由系统按屏幕给。
       screenStream = await navigator.mediaDevices.getDisplayMedia({
-        'video': true,
+        'video': {
+          'frameRate': 30,
+        },
         'audio': false,
       });
       final videoTracks = screenStream!.getVideoTracks();

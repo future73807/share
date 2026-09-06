@@ -204,22 +204,22 @@ const shortMode = (label) => ({
 // 因此本地预览走 CSS 覆盖层全屏,只有观看远端流才用 Fullscreen API。
 const isFsPreview = ref(false)
 const exitFsPreview = () => { isFsPreview.value = false }
+// 容器级全屏:对视频容器(而非 video 元素)调 Fullscreen API——
+// 浏览器窗口的标签栏/地址栏/书签全部收起,只剩页面内容,
+// 画面铺满整个显示器。共享自己的屏幕时(本地预览=当前屏幕内容,
+// API 全屏会引发合成器递归自捕获卡死)降级为 CSS 覆盖层全屏。
 const enterFullscreen = () => {
   if (isSharing.value) {
     isFsPreview.value = !isFsPreview.value
     return
   }
-  const videoEl = screenVideo.value
-  if (videoEl) {
-    if (videoEl.requestFullscreen) {
-      videoEl.requestFullscreen()
-    } else if (videoEl.webkitRequestFullscreen) {
-      videoEl.webkitRequestFullscreen()
-    } else if (videoEl.mozRequestFullScreen) {
-      videoEl.mozRequestFullScreen()
-    } else if (videoEl.msRequestFullscreen) {
-      videoEl.msRequestFullscreen()
-    }
+  const el = document.querySelector('.video-container')
+  if (!el) return
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen
+  if (req) {
+    req.call(el).catch?.(() => {})
+  } else {
+    isFsPreview.value = true
   }
 }
 const onFsKeydown = (e) => {
@@ -1207,6 +1207,15 @@ video {
   inset: 0;
   z-index: 2000;
   border-radius: 0;
+}
+.video-container:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}
+.video-container:fullscreen video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .users-panel {
   width: 220px;
