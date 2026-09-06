@@ -1098,21 +1098,23 @@ onUnmounted(() => {
 .main-content {
   flex: 1;
   display: flex;
-  padding: 16px;
-  gap: 16px;
+  /* 铺满全屏:视频区顶到屏幕边缘,无内边距 */
+  padding: 0;
+  gap: 0;
   min-height: 0;
 }
 .video-container {
   flex: 1;
   background: #0B1220;
-  border-radius: 16px;
+  border-radius: 0;
   position: relative;
   overflow: hidden;
-  border: 1px solid #1E293B;
+  border: none;
   min-height: 0;
+  min-width: 0;
 }
 .video-container.live {
-  border-color: rgba(37, 99, 235, 0.55);
+  border-color: transparent;
 }
 video {
   width: 100%;
@@ -1172,11 +1174,12 @@ video {
   background: rgba(0, 0, 0, 0.6);
 }
 .users-panel {
-  width: 190px;
+  width: 220px;
+  flex: none;
   background: #fff;
-  border-radius: 16px;
+  border-radius: 0;
+  border-left: 1px solid #E2E8F0;
   padding: 14px;
-  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.05);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1322,8 +1325,8 @@ video {
 @media (max-width: 800px) {
   .main-content {
     flex-direction: column;
-    padding: 12px;
-    gap: 12px;
+    padding: 0;
+    gap: 0;
   }
   .video-container {
     aspect-ratio: 16/9;

@@ -45,6 +45,9 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   bool isViewing = false;
   bool isMicOn = true;
   bool isFullScreen = false;
+  bool membersCollapsed = false; // 右侧成员列表收起状态
+  int _videoRotation = 0; // 画面旋转,90° 步进(0-3 圈)
+  final TransformationController _videoTransform = TransformationController();
   bool isJoining = false;
   String audioMode = audioModeMixed;
   String statusText = '';
@@ -83,6 +86,22 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     initializeSocket();
     _loadSavedData();
     _setupNativeCallbacks();
+    // 浅色背景上状态栏图标用黑色
+    _applyDarkStatusBarIcons();
+  }
+
+  void _applyDarkStatusBarIcons() {
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark, // 安卓状态栏图标黑色
+      statusBarBrightness: Brightness.light,    // iOS 同步
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ));
+  }
+
+  void _exitFullScreenUi() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    _applyDarkStatusBarIcons();
   }
 
   Future<void> _initRenderers() async {
@@ -108,6 +127,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     _roomController.dispose();
     _nickController.dispose();
     _serverController.dispose();
+    _videoTransform.dispose();
     peerConnections.forEach((_, pc) => pc.close());
     screenStream?.getTracks().forEach((t) => t.stop());
     micStream?.getTracks().forEach((t) => t.stop());
@@ -116,7 +136,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     _remoteRenderer.dispose();
     socket?.disconnect();
     if (isFullScreen) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      _exitFullScreenUi();
     }
     super.dispose();
   }
@@ -789,6 +809,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       });
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    _applyDarkStatusBarIcons();
     // 重新连接 socket 以便下次加入
     socket?.connect();
   }
@@ -1161,11 +1182,42 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
         child: isFullScreen
             ? _buildVideoArea()
             : Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                // 底部留出与工具栏之间的空隙
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
                 child: Row(children: [
                   Expanded(flex: 3, child: _buildVideoArea()),
                   const SizedBox(width: 12),
-                  SizedBox(width: 150, child: _buildUserList()),
+                  membersCollapsed
+                      ? GestureDetector(
+                          onTap: () =>
+                              setState(() => membersCollapsed = false),
+                          child: Container(
+                              width: 40,
+                              decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color: Colors.black.withOpacity(0.05),
+                                        blurRadius: 16,
+                                        offset: const Offset(0, 6))
+                                  ]),
+                              child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: const [
+                                    Icon(Icons.people_outline,
+                                        size: 20, color: Color(0xFF64748B)),
+                                    SizedBox(height: 6),
+                                    Icon(Icons.chevron_left,
+                                        size: 18, color: Color(0xFF94A3B8)),
+                                    SizedBox(height: 2),
+                                    Text('成员',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xFF64748B))),
+                                  ])),
+                        )
+                      : SizedBox(width: 150, child: _buildUserList()),
                 ]),
               ),
       ),
@@ -1192,8 +1244,20 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
         child: Stack(children: [
           if (_renderersInitialized && live)
             Positioned.fill(
-                child: RTCVideoView(isSharing ? _localRenderer : _remoteRenderer,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)),
+                child: GestureDetector(
+                    onDoubleTap: () => _videoTransform.value =
+                        Matrix4.identity(), // 双击复位缩放
+                    child: InteractiveViewer(
+                        transformationController: _videoTransform,
+                        panEnabled: true,
+                        minScale: 1.0,
+                        maxScale: 5.0,
+                        child: RotatedBox(
+                            quarterTurns: _videoRotation,
+                            child: RTCVideoView(
+                                isSharing ? _localRenderer : _remoteRenderer,
+                                objectFit: RTCVideoViewObjectFit
+                                    .RTCVideoViewObjectFitContain))))),
           if (!_renderersInitialized || !live)
             Center(
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -1229,29 +1293,51 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
           Positioned(
               top: 8,
               right: 8,
-              child: Material(
-                  color: Colors.black38,
-                  borderRadius: BorderRadius.circular(20),
-                  child: InkWell(
+              child: Row(children: [
+                // 旋转画面:每按一次顺时针 90°(0/90/180/270 循环)
+                if (live)
+                  Material(
+                      color: Colors.black38,
                       borderRadius: BorderRadius.circular(20),
-                      onTap: () {
-                        setState(() => isFullScreen = !isFullScreen);
-                        if (isFullScreen) {
-                          SystemChrome.setEnabledSystemUIMode(
-                              SystemUiMode.immersiveSticky);
-                        } else {
-                          SystemChrome.setEnabledSystemUIMode(
-                              SystemUiMode.edgeToEdge);
-                        }
-                      },
-                      child: Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Icon(
-                              isFullScreen
-                                  ? Icons.fullscreen_exit
-                                  : Icons.fullscreen,
-                              color: Colors.white,
-                              size: 20))))),
+                      child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () => setState(
+                              () => _videoRotation = (_videoRotation + 1) % 4),
+                          child: const Padding(
+                              padding: EdgeInsets.all(8),
+                              child: Icon(Icons.rotate_right,
+                                  color: Colors.white, size: 20)))),
+                if (live) const SizedBox(width: 8),
+                Material(
+                    color: Colors.black38,
+                    borderRadius: BorderRadius.circular(20),
+                    child: InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: () {
+                          setState(() => isFullScreen = !isFullScreen);
+                          if (isFullScreen) {
+                            // 真全屏:隐藏状态栏与导航栏(下滑可临时唤出)
+                            SystemChrome.setEnabledSystemUIMode(
+                                SystemUiMode.immersiveSticky,
+                                overlays: []);
+                          } else {
+                            // 退出全屏:复位旋转与缩放,恢复状态栏(黑色图标)
+                            setState(() {
+                              _videoRotation = 0;
+                              _videoTransform.value = Matrix4.identity();
+                            });
+                            _exitFullScreenUi();
+                          }
+                        },
+                        child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                                isFullScreen
+                                    ? Icons.fullscreen_exit
+                                    : Icons.fullscreen,
+                                color: Colors.white,
+                                size: 20)))),
+              ])),
         ]),
       ),
     );
@@ -1273,9 +1359,19 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Text('成员 · ${users.length}',
-                style: const TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w700, color: _sub))),
+            child: Row(children: [
+              Expanded(
+                  child: Text('成员 · ${users.length}',
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: _sub))),
+              // 收起成员列表
+              GestureDetector(
+                  onTap: () => setState(() => membersCollapsed = true),
+                  child: const Icon(Icons.chevron_right,
+                      size: 18, color: Color(0xFF94A3B8))),
+            ])),
         Expanded(
             child: users.isEmpty
                 ? Center(
