@@ -115,6 +115,7 @@
             {{ shortMode(mode.label) }}
           </button>
         </div>
+        <p v-if="shareHint" class="share-hint">{{ shareHint }}</p>
         <div class="controls">
           <button v-if="!isSharing" @click="showModePicker = true" class="control-button share">
             <MonitorUp :size="18" /> 分享屏幕
@@ -184,7 +185,7 @@ const serverInput = ref(initialServerUrl)
 // 声音分享模式: mixed=屏幕+麦克风, screen=仅屏幕内音, mic=仅麦克风, none=无声
 const audioModes = [
   { value: 'mixed', label: '混合(屏幕+麦克风)', icon: AudioLines },
-  { value: 'screen', label: '仅屏幕声音', icon: MonitorUp },
+  { value: 'screen', label: '仅屏幕声音(不采集麦克风)', icon: MonitorUp },
   { value: 'mic', label: '仅麦克风', icon: Mic },
   { value: 'none', label: '无声', icon: VolumeX }
 ]
@@ -192,7 +193,7 @@ const audioMode = ref(localStorage.getItem('audioMode') || 'mixed')
 
 const shortMode = (label) => ({
   '混合(屏幕+麦克风)': '混合',
-  '仅屏幕声音': '屏幕声音',
+  '仅屏幕声音(不采集麦克风)': '屏幕声音',
   '仅麦克风': '麦克风',
   '无声': '无声'
 }[label] || label)
@@ -219,8 +220,86 @@ let activeServerUrl = initialServerUrl
 let screenStream = null // 屏幕共享流(视频+屏幕内音)
 let micStream = null    // 麦克风流(带回声抑制)
 let peerConnections = new Map()
+const audioSenders = new Map()   // socketId -> RTCRtpSender(音频,切模式时 replaceTrack)
 const remoteStreams = new Map() // socketId -> MediaStream(合成远端视频+音频)
 const requestedStreams = new Set() // 已请求过流的共享者,防止重复请求
+let audioCtx = null             // WebAudio 上下文(混音/静音轨)
+let mixedDest = null            // 混合模式混音目标
+let mixedSources = []           // 混音源节点(切模式时先断开旧的)
+let silentDest = null           // 静音占位轨道(保证音频 m-line 恒存在,免重新协商)
+let activeAudioTrack = null     // 当前应发布的音频轨道(随模式重建)
+
+// 屏幕内音是否真的被浏览器捕获到(用户在浏览器弹窗里勾选"分享音频"才有)
+const hasScreenAudio = ref(false)
+// 面板内的临时提示(如"未捕获到系统声音")
+const shareHint = ref('')
+let shareHintTimer = null
+const showHint = (text) => {
+  shareHint.value = text
+  if (shareHintTimer) clearTimeout(shareHintTimer)
+  shareHintTimer = setTimeout(() => { shareHint.value = '' }, 6000)
+}
+
+const ensureAudioCtx = () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
+  return audioCtx
+}
+
+// 静音占位轨:无声音模式也保留音频 m-line,切模式 replaceTrack 即可,无需重新协商
+const ensureSilentTrack = () => {
+  const ctx = ensureAudioCtx()
+  if (!silentDest) {
+    silentDest = ctx.createMediaStreamDestination()
+    const src = ctx.createConstantSource()
+    const gain = ctx.createGain()
+    gain.gain.value = 0
+    src.connect(gain)
+    gain.connect(silentDest)
+    src.start()
+  }
+  return silentDest.stream.getAudioTracks()[0]
+}
+
+// 按当前模式计算应发布的音频轨道(网上标准做法):
+//  - 仅屏幕声音:仅 getDisplayMedia 捕获的系统音,绝不碰麦克风;
+//  - 混合:系统音 + 麦克风经 WebAudio 混成单轨(部分观众端只播第一条音轨,
+//    双轨分发会导致只有一路出声);
+//  - 仅麦克风 / 无声:对应轨道或静音占位。
+const buildAudioTrack = () => {
+  const mode = audioMode.value
+  const displayTrack = screenStream ? (screenStream.getAudioTracks()[0] || null) : null
+  const micTrack = (micStream && isMicOn.value) ? (micStream.getAudioTracks()[0] || null) : null
+  if (mode === 'none') return null
+  if (mode === 'mic') return micTrack
+  if (mode === 'screen') return displayTrack
+  // mixed:统一经 mixedDest 输出(关闭麦克风后单源也重连,确保旧源一定被断开)
+  const ctx = ensureAudioCtx()
+  if (!mixedDest) mixedDest = ctx.createMediaStreamDestination()
+  mixedSources.forEach(node => { try { node.disconnect() } catch (_) {} })
+  mixedSources = []
+  const sources = [displayTrack, micTrack].filter(Boolean)
+  if (sources.length === 0) return null
+  mixedSources = sources.map(t => {
+    const node = ctx.createMediaStreamSource(new MediaStream([t]))
+    node.connect(mixedDest)
+    return node
+  })
+  return mixedDest.stream.getAudioTracks()[0]
+}
+
+// 重算当前音频轨并替换到所有已有连接(免重新协商)
+const refreshPublishedAudio = () => {
+  activeAudioTrack = buildAudioTrack()
+  peerConnections.forEach((pc, socketId) => {
+    const sender = audioSenders.get(socketId)
+    if (sender) {
+      sender.replaceTrack(activeAudioTrack || ensureSilentTrack()).catch(err => {
+        console.warn('replaceTrack 失败:', err)
+      })
+    }
+  })
+}
 
 // 麦克风约束:开启回声抑制/噪声抑制/自动增益,避免扬声器声音被麦克风二次采集造成回音
 const micConstraints = {
@@ -460,17 +539,17 @@ const createPeerConnection = (socketId) => {
     }
   }
 
-  // 发布本地轨道:屏幕视频/屏幕内音 + 麦克风
-  if (screenStream) {
-    screenStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, screenStream)
-    })
+  // 发布本地轨道:屏幕视频 + 单一音频轨(混合模式=WebAudio 混音后的轨道;
+  // 无声模式用静音轨占位,保证切模式时 replaceTrack 即可,无需重新协商)
+  const videoTrack = screenStream ? screenStream.getVideoTracks()[0] : null
+  if (videoTrack) {
+    peerConnection.addTrack(videoTrack, screenStream)
   }
-  if (micStream) {
-    micStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, micStream)
-    })
-  }
+  const publishAudio = activeAudioTrack || ensureSilentTrack()
+  audioSenders.set(
+    socketId,
+    peerConnection.addTrack(publishAudio, new MediaStream([publishAudio]))
+  )
 
   // 接收远端轨道:合成到同一 MediaStream,视频+多路音频一起播放
   peerConnection.ontrack = (event) => {
@@ -576,32 +655,26 @@ const getMicStream = async () => {
   }
 }
 
-// 按模式应用轨道开关(共享中切换立即生效,无需重新协商)
-const applyAudioMode = () => {
-  const wantScreenAudio = audioMode.value === 'mixed' || audioMode.value === 'screen'
-  const wantMic = audioMode.value === 'mixed' || audioMode.value === 'mic'
-
-  if (screenStream) {
-    screenStream.getAudioTracks().forEach(t => { t.enabled = wantScreenAudio && isMicOn.value !== false })
-  }
-  if (micStream) {
-    micStream.getAudioTracks().forEach(t => { t.enabled = wantMic && isMicOn.value })
-  }
-}
-
-// 共享中切换声音模式
-const setAudioMode = (mode) => {
+// 共享中切换声音模式:重算应发布的音频轨并 replaceTrack(即时生效,免重协商)
+const setAudioMode = async (mode) => {
   audioMode.value = mode
   localStorage.setItem('audioMode', mode)
-  if (isSharing.value) {
-    applyAudioMode()
+  if (!isSharing.value) return
+  // 混合模式需要麦克风;从仅屏幕声音/无声切过来时补采(浏览器会弹授权)
+  if (mode === 'mixed' && !micStream) {
+    micStream = await getMicStream()
   }
+  hasMicTrack.value = !!(micStream && micStream.getAudioTracks().length > 0)
+  if ((mode === 'screen' || mode === 'mixed') && !hasScreenAudio.value) {
+    showHint('未捕获到系统声音:发起共享时需在浏览器弹窗勾选“分享音频”,且共享整个屏幕才有系统音(共享单个标签页只有该标签页的声音)')
+  }
+  refreshPublishedAudio()
 }
 
 const toggleMic = () => {
   if (micStream && micStream.getAudioTracks().length > 0) {
     isMicOn.value = !isMicOn.value
-    applyAudioMode()
+    refreshPublishedAudio()
   }
 }
 
@@ -618,8 +691,14 @@ const startSharing = async (mode) => {
       localStorage.setItem('audioMode', mode)
     }
     isMicOn.value = true
+    const wantScreenAudio = audioMode.value === 'mixed' || audioMode.value === 'screen'
     screenStream = await getScreenStream()
-    // 麦克风按需采集(混合/仅麦克风模式)
+    // 检测屏幕内音是否真的被捕获(浏览器弹窗勾选"分享音频"才有音轨)
+    hasScreenAudio.value = screenStream.getAudioTracks().length > 0
+    if (wantScreenAudio && !hasScreenAudio.value) {
+      showHint('未捕获到系统声音:浏览器弹窗中需勾选“分享音频”,共享整个屏幕才有系统音')
+    }
+    // 麦克风按需采集(混合/仅麦克风模式);仅屏幕声音绝不碰麦克风
     if (audioMode.value === 'mixed' || audioMode.value === 'mic') {
       micStream = await getMicStream()
     }
@@ -632,7 +711,7 @@ const startSharing = async (mode) => {
     if (screenVideo.value) {
       screenVideo.value.muted = true
     }
-    applyAudioMode()
+    activeAudioTrack = buildAudioTrack()
 
     // 用户点击浏览器"停止共享"条时自动结束
     screenStream.getVideoTracks()[0].onended = () => {
@@ -675,6 +754,11 @@ const releaseLocalStreams = () => {
     micStream.getTracks().forEach(track => track.stop())
     micStream = null
   }
+  // 清理 WebAudio 混音状态
+  mixedSources.forEach(node => { try { node.disconnect() } catch (_) {} })
+  mixedSources = []
+  mixedDest = null
+  activeAudioTrack = null
 }
 
 // 组件挂载时初始化 Socket 连接
@@ -875,6 +959,12 @@ onUnmounted(() => {
   margin-top: 10px;
   flex-wrap: nowrap;
   padding-bottom: 2px;
+}
+.share-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #D97706;
 }
 .mode-chip {
   display: inline-flex;
