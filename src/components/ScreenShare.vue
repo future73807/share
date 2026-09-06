@@ -565,6 +565,20 @@ const createPeerConnection = (socketId) => {
     peerConnection.addTrack(publishAudio, new MediaStream([publishAudio]))
   )
 
+  // 屏幕共享发送参数:固定分辨率(maintain-resolution,只降帧不降分辨率)
+  // + 足量码率 + 限 15fps,消除分辨率泵动导致的闪烁、模糊与延迟
+  try {
+    const vsender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video')
+    if (vsender) {
+      const p = vsender.getParameters()
+      p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}]
+      p.encodings[0].maxBitrate = 4000000
+      p.encodings[0].maxFramerate = 15
+      p.degradationPreference = 'maintain-resolution'
+      vsender.setParameters(p).catch(() => {})
+    }
+  } catch (_) {}
+
   // 接收远端轨道:合成到同一 MediaStream,视频+多路音频一起播放
   peerConnection.ontrack = (event) => {
     let remote = remoteStreams.get(socketId)

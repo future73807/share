@@ -518,6 +518,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             await pc.addTrack(track, localPublishStream!);
           }
         }
+        await _applyScreenSenderParams(pc);
       }
       final offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -531,6 +532,32 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   }
 
   // ============ 屏幕共享 ============
+
+  /// 屏幕共享视频发送参数。flutter_webrtc 默认以全屏分辨率(如 1080x2400@30)
+  /// 采集,而发送码率用 WebRTC 默认低值:带宽一波动,编码器就不停
+  /// 降/升分辨率——表现为画面闪烁与忽清忽糊;帧队列堆积则延迟越来越高。
+  /// 这里固定分辨率(maintain-resolution,只降帧不降分辨率)+ 足量码率
+  /// + 限 15fps,画质稳定、延迟可控。
+  Future<void> _applyScreenSenderParams(RTCPeerConnection pc) async {
+    try {
+      final senders = await pc.getSenders();
+      for (final sender in senders) {
+        final track = sender.track;
+        if (track == null || track.kind != 'video') continue;
+        final params = sender.parameters;
+        params.degradationPreference =
+            RTCDegradationPreference.MAINTAIN_RESOLUTION;
+        final encodings = params.encodings;
+        if (encodings != null && encodings.isNotEmpty) {
+          encodings.first.maxBitrate = 4000000;
+          encodings.first.maxFramerate = 15;
+        }
+        await sender.setParameters(params);
+      }
+    } catch (e) {
+      debugPrint('设置视频发送参数失败: $e');
+    }
+  }
 
   /// 生效的原生混音模式
   String get effectiveNativeMode {
