@@ -223,6 +223,59 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     "micFeed" to micFeedActive
                 ))
             }
+            "enterImmersive" -> {
+                // 真·全屏:原生 WindowInsetsController 隐藏状态栏+导航栏。
+                // SystemChrome 的 immersive 模式在部分系统(MIUI 等)会被覆盖失效。
+                val act = activity
+                if (act == null) {
+                    result.success(false)
+                    return
+                }
+                act.runOnUiThread {
+                    try {
+                        val w = act.window
+                        val controller = w.insetsController
+                        if (controller != null) {
+                            controller.systemBarsBehavior =
+                                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                            controller.hide(android.view.WindowInsets.Type.systemBars())
+                        } else {
+                            @Suppress("DEPRECATION")
+                            w.decorView.systemUiVisibility = (android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                    or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                                    or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                    or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                    or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                    or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
+                        }
+                        w.statusBarColor = android.graphics.Color.BLACK
+                        result.success(true)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "enterImmersive 失败", t)
+                        result.success(false)
+                    }
+                }
+            }
+            "exitImmersive" -> {
+                val act = activity
+                if (act == null) {
+                    result.success(false)
+                    return
+                }
+                act.runOnUiThread {
+                    try {
+                        val w = act.window
+                        w.insetsController?.show(android.view.WindowInsets.Type.systemBars())
+                        @Suppress("DEPRECATION")
+                        w.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        w.statusBarColor = android.graphics.Color.TRANSPARENT
+                        result.success(true)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "exitImmersive 失败", t)
+                        result.success(false)
+                    }
+                }
+            }
             else -> result.notImplemented()
         }
     }

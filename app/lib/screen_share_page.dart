@@ -101,6 +101,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   void _exitFullScreenUi() {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    _channel.invokeMethod('exitImmersive').catchError((_) => null);
     _applyDarkStatusBarIcons();
   }
 
@@ -1316,10 +1317,15 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                         onTap: () {
                           setState(() => isFullScreen = !isFullScreen);
                           if (isFullScreen) {
-                            // 真全屏:隐藏状态栏与导航栏(下滑可临时唤出)
+                            // 真全屏:隐藏状态栏与导航栏(下滑可临时唤出)。
+                            // SystemChrome 在部分系统会被覆盖,原生
+                            // WindowInsetsController 是权威路径。
                             SystemChrome.setEnabledSystemUIMode(
-                                SystemUiMode.immersiveSticky,
+                                SystemUiMode.manual,
                                 overlays: []);
+                            _channel
+                                .invokeMethod('enterImmersive')
+                                .catchError((_) => null);
                           } else {
                             // 退出全屏:复位旋转与缩放,恢复状态栏(黑色图标)
                             setState(() {

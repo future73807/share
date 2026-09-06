@@ -75,7 +75,7 @@
     <!-- 会议室 -->
     <div v-else class="meeting-room">
       <div class="main-content">
-        <div class="video-container" :class="{ live: isSharing || isViewing }">
+        <div class="video-container" :class="[{ live: isSharing || isViewing }, isFsPreview ? 'fs-preview' : '' ]">
           <video ref="screenVideo" autoplay playsinline :muted="isSharing"></video>
           <div class="video-overlay" v-if="!isSharing && !isViewing">
             <MonitorUp :size="44" />
@@ -198,8 +198,17 @@ const shortMode = (label) => ({
   '无声': '无声'
 }[label] || label)
 
-// 全屏功能
+// 全屏功能。
+// 共享自己的屏幕时,本地预览播放的正是当前屏幕内容——对它调
+// requestFullscreen 会引发合成器递归自捕获,浏览器直接卡死;
+// 因此本地预览走 CSS 覆盖层全屏,只有观看远端流才用 Fullscreen API。
+const isFsPreview = ref(false)
+const exitFsPreview = () => { isFsPreview.value = false }
 const enterFullscreen = () => {
+  if (isSharing.value) {
+    isFsPreview.value = !isFsPreview.value
+    return
+  }
   const videoEl = screenVideo.value
   if (videoEl) {
     if (videoEl.requestFullscreen) {
@@ -213,6 +222,11 @@ const enterFullscreen = () => {
     }
   }
 }
+const onFsKeydown = (e) => {
+  if (e.key === 'Escape') isFsPreview.value = false
+}
+window.addEventListener('keydown', onFsKeydown)
+onUnmounted(() => window.removeEventListener('keydown', onFsKeydown))
 
 // WebRTC 相关变量
 let socket = null
@@ -730,6 +744,7 @@ const startSharing = async (mode) => {
 // 停止屏幕共享
 const stopSharing = async () => {
   releaseLocalStreams()
+  isFsPreview.value = false
 
   if (screenVideo.value) {
     screenVideo.value.srcObject = null
@@ -1172,6 +1187,12 @@ video {
 }
 .fullscreen-btn:hover {
   background: rgba(0, 0, 0, 0.6);
+}
+.video-container.fs-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  border-radius: 0;
 }
 .users-panel {
   width: 220px;
