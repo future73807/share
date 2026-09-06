@@ -16,9 +16,9 @@
           <h1 class="hero-title">屏幕共享</h1>
           <p class="hero-sub">把手机或电脑屏幕,连同声音,实时分享给房间里的每一个人</p>
           <ul class="hero-feats">
-            <li><MonitorSmartphone :size="17" /> 手机 / 电脑画面互通</li>
+            <li>手机 / 电脑画面互通</li>
             <li>屏幕内音、麦克风、混合三种声音模式</li>
-            <li><AudioWaveform :size="17" /> 硬件级回声抑制</li>
+            <li>硬件级回声抑制</li>
           </ul>
         </div>
         <div class="join-card">
@@ -192,7 +192,15 @@ const exitFsPreview = () => { isFsPreview.value = false }
 // 画面铺满整个显示器。共享自己的屏幕时(本地预览=当前屏幕内容,
 // API 全屏会引发合成器递归自捕获卡死)降级为 CSS 覆盖层全屏。
 const enterFullscreen = () => {
+  // 已在全屏:再点退出(Esc 同效)
+  if (document.fullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen()
+    isFsPreview.value = false
+    return
+  }
   if (isSharing.value) {
+    // 共享自己的屏幕:本地预览=当前屏幕内容,API 全屏会合成器递归自捕获卡死,
+    // 降级 CSS 覆盖层全屏
     isFsPreview.value = !isFsPreview.value
     return
   }
@@ -200,7 +208,7 @@ const enterFullscreen = () => {
   if (!el) return
   const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen
   if (req) {
-    req.call(el).catch?.(() => {})
+    Promise.resolve(req.call(el)).catch(() => { isFsPreview.value = true })
   } else {
     isFsPreview.value = true
   }
@@ -1355,13 +1363,32 @@ video {
     padding: 0;
     gap: 0;
   }
+  /* 参考手机端:视频占满剩余高度,成员列表收成横向紧凑条 */
   .video-container {
-    aspect-ratio: 16/9;
-    flex: none;
+    flex: 1;
+    min-height: 0;
   }
   .users-panel {
     width: 100%;
-    flex: 1;
+    flex: none;
+    max-height: 118px;
+    border-left: none;
+    border-top: 1px solid #E2E8F0;
+    padding: 8px 14px 10px;
+  }
+  .users-title {
+    margin: 0 0 6px 2px;
+  }
+  .users-scroll {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 8px;
+    align-items: center;
+  }
+  .user-row {
+    flex: none;
+    width: auto;
   }
   .bottom-toolbar {
     padding: 10px 12px 12px;
