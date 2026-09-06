@@ -228,6 +228,7 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 // SystemChrome 的 immersive 模式在部分系统(MIUI 等)会被覆盖失效;
                 // Android 15 强制 edge-to-edge 下还须清 decorFitsSystemWindows,
                 // 且 MIUI 偶发把栏顶回来——延迟再隐藏一次兜底。
+                // 兜底外观:状态栏即便仍显示,图标也保持黑色(浅色样式)。
                 val act = activity
                 if (act == null) {
                     result.success(false)
@@ -241,16 +242,22 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     w.insetsController?.let { c ->
                         c.systemBarsBehavior =
                             android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        c.setSystemBarsAppearance(
+                            android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                            android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS)
                         c.hide(android.view.WindowInsets.Type.statusBars() or
                                 android.view.WindowInsets.Type.navigationBars())
                     }
+                    @Suppress("DEPRECATION")
+                    w.decorView.systemUiVisibility = w.decorView.systemUiVisibility or
+                            android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    w.statusBarColor = android.graphics.Color.TRANSPARENT
                 }
                 act.runOnUiThread {
                     try {
                         hideBars()
                         // MIUI 兜底:过 300ms 再隐藏一次,防被系统动画顶回
                         mainHandler.postDelayed({ hideBars() }, 300)
-                        act.window.statusBarColor = android.graphics.Color.BLACK
                         Log.i(TAG, "enterImmersive 已执行")
                         result.success(true)
                     } catch (t: Throwable) {
@@ -269,8 +276,12 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     try {
                         val w = act.window
                         w.insetsController?.show(android.view.WindowInsets.Type.systemBars())
+                        w.insetsController?.setSystemBarsAppearance(
+                            android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                            android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS)
                         @Suppress("DEPRECATION")
-                        w.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        w.decorView.systemUiVisibility = (w.decorView.systemUiVisibility or
+                                android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR)
                         w.statusBarColor = android.graphics.Color.TRANSPARENT
                         result.success(true)
                     } catch (t: Throwable) {
