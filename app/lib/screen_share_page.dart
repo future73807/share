@@ -1388,7 +1388,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(children: [
-                const BrandLogo(size: 52),
+                // logo 图标相对右侧文字整体略下移一点(视觉居中对齐标题)
+                Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: const BrandLogo(size: 52)),
                 const SizedBox(width: 14),
                 const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1512,44 +1515,41 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             ? _buildVideoArea()
             : Padding(
                 padding: EdgeInsets.fromLTRB(12, topInset, 12, 12),
-                child: Row(children: [
-                  Expanded(flex: 3, child: _buildVideoArea()),
-                  const SizedBox(width: 12),
-                  membersCollapsed
-                      ? _buildMembersBubble()
-                      : SizedBox(width: 150, child: _buildUserList()),
-                ]),
+                // 收起时视频区占满整行,气泡条叠加在视频区右缘之上
+                child: membersCollapsed
+                    ? Stack(children: [
+                        Positioned.fill(child: _buildVideoArea()),
+                        Positioned(
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            child: Center(child: _buildMembersBubble())),
+                      ])
+                    : Row(children: [
+                        Expanded(flex: 3, child: _buildVideoArea()),
+                        const SizedBox(width: 12),
+                        SizedBox(width: 150, child: _buildUserList()),
+                      ]),
               ),
       ),
       if (!isFullScreen) _buildControlBar(),
     ]);
   }
 
-  /// 成员面板收起后的小气泡条(视频区右侧垂直居中,点击展开面板)
+  /// 成员面板收起后的半透明小气泡条:叠加在视频区右缘之上,
+  /// 右侧直角贴合边缘、左侧圆角,内含向左箭头,点击展开面板
   Widget _buildMembersBubble() {
     return GestureDetector(
       onTap: () => setState(() => membersCollapsed = false),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        width: 30,
+        height: 64,
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(999),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 16,
-                offset: const Offset(0, 6))
-          ],
+          color: Colors.white.withOpacity(0.6),
+          borderRadius:
+              const BorderRadius.horizontal(left: Radius.circular(16)),
         ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.people_outline, size: 16, color: Color(0xFF64748B)),
-          const SizedBox(width: 5),
-          Text('${users.length}',
-              style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF334155))),
-        ]),
+        child: const Icon(Icons.chevron_left, size: 20, color: Color(0xFF334155)),
       ),
     );
   }
