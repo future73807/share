@@ -114,6 +114,12 @@
             {{ shortMode(mode.label) }}
           </button>
         </div>
+        <div class="fps-row" v-if="isSharing">
+          <span class="fps-row-label">帧率</span>
+          <button v-for="f in fpsTiers" :key="f" type="button"
+                  class="mode-chip fps-chip" :class="{ active: shareFps === f }"
+                  @click="setFpsTier(f)">{{ f }}</button>
+        </div>
         <p v-if="shareHint" class="share-hint">{{ shareHint }}</p>
         <div class="controls">
           <button v-if="!isSharing" @click="showModePicker = true" class="control-button share">
@@ -139,6 +145,12 @@
     <div v-if="showModePicker" class="picker-mask" @click.self="showModePicker = false">
       <div class="picker-card">
         <p class="picker-title">选择共享声音模式</p>
+        <div class="fps-row">
+          <span class="fps-row-label">帧率</span>
+          <button v-for="f in fpsTiers" :key="'p' + f" type="button"
+                  class="mode-chip fps-chip" :class="{ active: shareFps === f }"
+                  @click="setFpsTier(f)">{{ f }}</button>
+        </div>
         <button v-for="mode in audioModes" :key="mode.value" type="button"
                 class="picker-option" :class="{ active: audioMode === mode.value }"
                 @click="pickAndShare(mode.value)">
@@ -189,6 +201,26 @@ const audioModes = [
   { value: 'none', label: '无声', icon: VolumeX }
 ]
 const audioMode = ref(localStorage.getItem('audioMode') || 'mixed')
+
+// 帧率档位:编码发送上限(实际帧率受设备刷新率限制,档位只是天花板)。
+// 共享中可热切换:采集轨 applyConstraints + 所有 sender setParameters,免重协商。
+const fpsTiers = [60, 90, 120, 144, 165]
+const shareFps = ref(((v) => (fpsTiers.includes(v) ? v : 60))(parseInt(localStorage.getItem('shareFps'), 10)))
+// 码率随帧率走(只是上限,实际由带宽估计自适应):
+// 上限码率=fps*120k(60→7.2M,165→19.8M 封顶 20M);SDP 起步码率=fps*50k(60→3M,165→8M 封顶)
+const fpsBitrate = (fps) => Math.min(20000000, Math.max(7200000, fps * 120000))
+const fpsStartBitrate = (fps) => Math.min(8000000, Math.max(3000000, fps * 50000))
+// 共享中切换档位:采集节流跟随 + 更新全部已建立连接的发送参数
+const setFpsTier = (fps) => {
+  shareFps.value = fps
+  localStorage.setItem('shareFps', String(fps))
+  if (!isSharing.value) return
+  const vtrack = screenStream && screenStream.getVideoTracks()[0]
+  if (vtrack && vtrack.applyConstraints) {
+    vtrack.applyConstraints({ frameRate: { ideal: fps, max: fps } }).catch(() => {})
+  }
+  peerConnections.forEach((pc) => applyVideoSenderParams(pc))
+}
 
 const shortMode = (label) => ({
   '混合(屏幕+麦克风)': '混合',
@@ -339,7 +371,7 @@ const initializeSocket = (url) => {
   // 调试钩子:便于自动化测试检查连接状态
   if (typeof window !== 'undefined') {
     window.__ss = {
-      socket, peerConnections, remoteStreams,
+      socket, peerConnections, remoteStreams, setFps: setFpsTier,
       state: () => ({
         isInRoom: isInRoom.value, isJoining: isJoining.value,
         joinError: joinError.value, isSharing: isSharing.value
@@ -421,10 +453,15 @@ const initializeSocket = (url) => {
     const peerConnection = createPeerConnection(from)
     try {
       await peerConnection.setRemoteDescription(data.offer)
+      // 共享者应答:发送编码走 H264 硬编优先(与主动 Offer 一致)
+      if (isSharing.value) preferHardwareVideoCodecs(peerConnection)
       const answer = await peerConnection.createAnswer()
-      await peerConnection.setLocalDescription(answer)
+      // 共享者的 Answer 含发送编码,同样提速起步码率
+      const sdp = isSharing.value ? boostVideoStartBitrate(answer.sdp) : answer.sdp
+      const boosted = { type: answer.type, sdp }
+      await peerConnection.setLocalDescription(boosted)
       socket.emit('answer', {
-        answer,
+        answer: boosted,
         to: from
       })
     } catch (error) {
@@ -513,6 +550,87 @@ const waitForConnected = (timeout) => new Promise(resolve => {
   }, 250)
 })
 
+// SDP 起步码率提速:给 m=video 段的编码格式追加 x-google-start/min-bitrate。
+// 编码器默认 ~300kbps 起步、需数秒爬升,爬升期的模糊会被感知为"卡/糊";
+// 起步值随帧率档位走(60fps→3M,120→6M,165→8M 封顶),消除爬升窗口。
+const boostVideoStartBitrate = (sdp) => {
+  const extra = `x-google-start-bitrate=${fpsStartBitrate(shareFps.value)};x-google-min-bitrate=1200`
+  try {
+    const newline = sdp.includes('\r\n') ? '\r\n' : '\n'
+    const lines = sdp.split(/\r?\n/)
+    const out = []
+    let inVideo = false
+    let fmtpDone = false
+    for (const line of lines) {
+      if (line.startsWith('m=')) inVideo = line.startsWith('m=video')
+      if (inVideo) {
+        const fmtp = line.match(/^a=fmtp:(\d+)(.*)$/)
+        if (fmtp) {
+          fmtpDone = true
+          const rest = fmtp[2]
+          if (!rest.includes('x-google-start-bitrate')) {
+            out.push(rest.trim()
+              ? `a=fmtp:${fmtp[1]}${rest};${extra}`
+              : `a=fmtp:${fmtp[1]} ${extra}`)
+            continue
+          }
+        } else if (!fmtpDone) {
+          // 无 fmtp 行(如 VP8):在第一个视频 rtpmap 后补一行
+          const pt = line.match(/^a=rtpmap:(\d+) [^ ]+\/90000/)
+          if (pt) {
+            out.push(line)
+            out.push(`a=fmtp:${pt[1]} ${extra}`)
+            fmtpDone = true
+            continue
+          }
+        }
+      }
+      out.push(line)
+    }
+    return out.join(newline)
+  } catch (_) {
+    return sdp
+  }
+}
+
+// 对一条连接的视频 sender 应用当前档位的发送参数(建连与切档共用)
+const applyVideoSenderParams = (peerConnection) => {
+  try {
+    const vsender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video')
+    if (!vsender) return
+    const p = vsender.getParameters()
+    p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}]
+    p.encodings[0].maxBitrate = fpsBitrate(shareFps.value)
+    p.encodings[0].maxFramerate = shareFps.value
+    p.degradationPreference = 'maintain-resolution'
+    vsender.setParameters(p).catch(() => {})
+  } catch (_) {}
+}
+
+// 编解码偏好:H264(硬件编码)优先。屏幕内容 VP8 软编(libvpx)吞吐
+// 只有 20-30fps@2.5K,是高帧率的首要瓶颈;H264 走 GPU/MediaCodec 硬编。
+// 仅重排序、不剔除,对端不支持 H264 时仍可回退 VP8。
+const preferHardwareVideoCodecs = (peerConnection) => {
+  try {
+    const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities('video')
+    if (!caps || !caps.codecs) return
+    const score = (c) => {
+      const m = (c.mimeType || '').toLowerCase()
+      if (m === 'video/h264') return 0
+      if (m === 'video/vp8') return 1
+      return 2
+    }
+    const sorted = [...caps.codecs].sort((a, b) => score(a) - score(b))
+    peerConnection.getTransceivers().forEach(t => {
+      try {
+        if (t.sender && t.sender.track && t.sender.track.kind === 'video' && t.setCodecPreferences) {
+          t.setCodecPreferences(sorted)
+        }
+      } catch (_) {}
+    })
+  } catch (_) {}
+}
+
 // 向指定用户创建对等连接并发送 Offer(共享者侧)
 const createOfferTo = async (socketId) => {
   const peerConnection = createPeerConnection(socketId)
@@ -521,10 +639,12 @@ const createOfferTo = async (socketId) => {
     return
   }
   try {
+    preferHardwareVideoCodecs(peerConnection)
     const offer = await peerConnection.createOffer()
-    await peerConnection.setLocalDescription(offer)
+    const boosted = { type: offer.type, sdp: boostVideoStartBitrate(offer.sdp) }
+    await peerConnection.setLocalDescription(boosted)
     socket.emit('offer', {
-      offer,
+      offer: boosted,
       to: socketId
     })
   } catch (error) {
@@ -573,21 +693,22 @@ const createPeerConnection = (socketId) => {
   )
 
   // 屏幕共享发送参数:固定分辨率(maintain-resolution,只降帧不降分辨率)
-  // + 足量码率 + 限 15fps,消除分辨率泵动导致的闪烁、模糊与延迟
-  try {
-    const vsender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video')
-    if (vsender) {
-      const p = vsender.getParameters()
-      p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}]
-      p.encodings[0].maxBitrate = 4000000
-      p.encodings[0].maxFramerate = 15
-      p.degradationPreference = 'maintain-resolution'
-      vsender.setParameters(p).catch(() => {})
-    }
-  } catch (_) {}
+  // + 足量码率 + 所选帧率档,消除分辨率泵动导致的闪烁、模糊与延迟
+  applyVideoSenderParams(peerConnection)
 
   // 接收远端轨道:合成到同一 MediaStream,视频+多路音频一起播放
   peerConnection.ontrack = (event) => {
+    // 低延迟:压缩接收端抖动缓冲目标(自适应默认可达数百毫秒)。
+    // 视频尽快渲染(0 = 尽量低),音频留 40ms 防抖;单位为秒。
+    // 屏幕内容偶发花屏/丢帧可接受(局域网重传一个 RTT 内恢复)。
+    const recv = event.receiver
+    if (recv) {
+      const target = event.track.kind === 'video' ? 0 : 0.04
+      try {
+        if ('jitterBufferTarget' in recv) recv.jitterBufferTarget = target
+        else if ('playoutDelayHint' in recv) recv.playoutDelayHint = target
+      } catch (_) {}
+    }
     let remote = remoteStreams.get(socketId)
     if (!remote) {
       remote = new MediaStream()
@@ -598,10 +719,12 @@ const createPeerConnection = (socketId) => {
         remote.addTrack(track)
       }
     })
-    if (screenVideo.value) {
+    if (screenVideo.value && !isSharing.value) {
+      // 共享者本地预览播放的是采集流,不能被观众回传的(可能仅音频的)
+      // 远端流覆盖——只有观看者才把远端流接到 video 元素上
       screenVideo.value.srcObject = remote
       isViewing.value = true
-    }
+  }
   }
 
   peerConnections.set(socketId, peerConnection)
@@ -664,7 +787,8 @@ const getScreenStream = async () => {
   const wantScreenAudio = audioMode.value === 'mixed' || audioMode.value === 'screen'
   try {
     return await navigator.mediaDevices.getDisplayMedia({
-      video: true,
+      // 采集节流跟随所选帧率档(高刷屏才能给到高于刷新率的值,取 min)
+      video: { frameRate: { ideal: shareFps.value, max: shareFps.value } },
       audio: wantScreenAudio ? {
         echoCancellation: false,
         noiseSuppression: false,
@@ -728,6 +852,9 @@ const startSharing = async (mode) => {
     isMicOn.value = true
     const wantScreenAudio = audioMode.value === 'mixed' || audioMode.value === 'screen'
     screenStream = await getScreenStream()
+    // 帧率优先:告知编码器画面偏运动,掉帧前不牺牲流畅度
+    const vtrack = screenStream.getVideoTracks()[0]
+    if (vtrack && 'contentHint' in vtrack) vtrack.contentHint = 'motion'
     // 检测屏幕内音是否真的被捕获(浏览器弹窗勾选"分享音频"才有音轨)
     hasScreenAudio.value = screenStream.getAudioTracks().length > 0
     if (wantScreenAudio && !hasScreenAudio.value) {
@@ -1002,6 +1129,25 @@ onUnmounted(() => {
   margin-top: 10px;
   flex-wrap: nowrap;
   padding-bottom: 2px;
+}
+.fps-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  margin-top: 10px;
+  padding-bottom: 2px;
+}
+.fps-row-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748B;
+}
+.fps-chip {
+  flex: none;
+  min-width: 44px;
+  justify-content: center;
 }
 .share-hint {
   margin: 6px 0 0;

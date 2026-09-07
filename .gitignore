@@ -27,3 +27,4 @@ dist-ssr
 out/
 .v2c/
 .video_agent/
+_temp/

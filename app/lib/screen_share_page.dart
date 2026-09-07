@@ -27,6 +27,18 @@ const List<Map<String, String>> kAudioModes = [
   {'value': audioModeNone, 'label': '无声'},
 ];
 
+/// 帧率档位(默认 60)。编码发送上限;实际帧率受设备刷新率限制
+/// (libwebrtc 屏幕采集帧率=屏幕内容更新率,闸门在编码器 maxFramerate)。
+const List<int> kFpsTiers = [60, 90, 120, 144, 165];
+const int kDefaultFps = 60;
+
+/// 发送上限码率随帧率走(只是上限,实际由带宽估计自适应):
+/// fps*120k,60→7.2M,165→19.8M 封顶 20M
+int fpsBitrate(int fps) => (fps * 120000).clamp(7200000, 20000000);
+
+/// SDP 起步码率随帧率走:fps*50k,60→3M,165→8M 封顶
+int fpsStartBitrate(int fps) => (fps * 50000).clamp(3000000, 8000000);
+
 class ScreenSharePage extends StatefulWidget {
   const ScreenSharePage({Key? key}) : super(key: key);
 
@@ -50,6 +62,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   final TransformationController _videoTransform = TransformationController();
   bool isJoining = false;
   String audioMode = audioModeMixed;
+  int shareFps = kDefaultFps; // 帧率档位(60/90/120/144/165)
   String statusText = '';
   List<Map<String, dynamic>> users = [];
 
@@ -147,6 +160,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     final savedRoom = prefs.getString('roomId') ?? '';
     final savedNickname = prefs.getString('nickname') ?? '';
     final savedServer = prefs.getString('serverUrl') ?? '';
+    final savedFps = prefs.getInt('shareFps') ?? kDefaultFps;
     if (mounted) {
       setState(() {
         if (savedRoom.isNotEmpty) {
@@ -159,6 +173,9 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
         }
         if (savedServer.isNotEmpty) {
           _serverController.text = savedServer;
+        }
+        if (kFpsTiers.contains(savedFps)) {
+          shareFps = savedFps;
         }
       });
     }
@@ -519,11 +536,16 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
           }
         }
         await _applyScreenSenderParams(pc);
+        await _preferHardwareVideoCodec(pc);
       }
       final offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      // 起步码率提速后作为本地描述;发给对端的 SDP 必须与实际
+      // setLocalDescription 的一致,故 emit 也用提速后的
+      final boosted = RTCSessionDescription(
+          _boostVideoStartBitrate(offer.sdp ?? ''), offer.type);
+      await pc.setLocalDescription(boosted);
       socket?.emit('offer', {
-        'offer': {'type': offer.type, 'sdp': offer.sdp},
+        'offer': {'type': boosted.type, 'sdp': boosted.sdp},
         'to': socketId,
       });
     } catch (e) {
@@ -536,8 +558,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   /// 屏幕共享视频发送参数。flutter_webrtc 默认发送码率用 WebRTC 低默认值:
   /// 带宽一波动编码器就不停降/升分辨率——表现为闪烁与忽清忽糊,帧队列
   /// 堆积则延迟越来越高。这里固定分辨率(maintain-resolution,只降帧不降
-  /// 分辨率)+ 足量码率(6M,1080x2400 高码屏内容够用)+ 帧率上限 25,
-  /// 画质稳定、动画流畅、延迟可控。
+  /// 分辨率)+ 足量码率(随帧率档位,60fps≈7.2M)+ 帧率上限取所选档位
+  /// (屏幕采集帧率=屏幕内容更新率,闸门在编码器),画质稳定、动画流畅。
   Future<void> _applyScreenSenderParams(RTCPeerConnection pc) async {
     try {
       final senders = await pc.getSenders();
@@ -549,13 +571,118 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             RTCDegradationPreference.MAINTAIN_RESOLUTION;
         final encodings = params.encodings;
         if (encodings != null && encodings.isNotEmpty) {
-          encodings.first.maxBitrate = 6000000;
-          encodings.first.maxFramerate = 25;
+          encodings.first.maxBitrate = fpsBitrate(shareFps);
+          encodings.first.maxFramerate = shareFps;
         }
         await sender.setParameters(params);
       }
     } catch (e) {
       debugPrint('设置视频发送参数失败: $e');
+    }
+  }
+
+  /// 编解码偏好:H264(硬件编码)优先。屏幕内容 VP8 软编在手机上吞吐
+  /// 不足(1080p@30 即吃满 CPU,是"卡"的根源之一);H264 走 MediaCodec
+  /// 硬编,高帧率无压力。仅重排序、不剔除,对端不支持时仍回退 VP8。
+  Future<void> _preferHardwareVideoCodec(RTCPeerConnection pc) async {
+    try {
+      final caps = await getRtpSenderCapabilities('video');
+      final codecs = caps.codecs;
+      if (codecs == null || codecs.isEmpty) return;
+      int score(RTCRtpCodecCapability c) {
+        final m = c.mimeType.toLowerCase();
+        if (m == 'video/h264') return 0;
+        if (m == 'video/vp8') return 1;
+        return 2;
+      }
+
+      final sorted = [...codecs]..sort((a, b) => score(a).compareTo(score(b)));
+      for (final t in await pc.getTransceivers()) {
+        try {
+          final track = t.sender.track;
+          if (track != null && track.kind == 'video') {
+            await t.setCodecPreferences(sorted);
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('设置 H264 编解码偏好失败: $e');
+    }
+  }
+
+  /// 切换帧率档位(共享前选择持久化;共享中热切换所有已建立连接的
+  /// 发送参数,免重协商)。
+  Future<void> _setFpsTier(int fps) async {
+    if (!kFpsTiers.contains(fps) || fps == shareFps) return;
+    setState(() => shareFps = fps);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('shareFps', fps);
+    if (!isSharing) return;
+    for (final pc in peerConnections.values) {
+      try {
+        final senders = await pc.getSenders();
+        for (final sender in senders) {
+          final track = sender.track;
+          if (track == null || track.kind != 'video') continue;
+          final params = sender.parameters;
+          final encodings = params.encodings;
+          if (encodings != null && encodings.isNotEmpty) {
+            encodings.first.maxBitrate = fpsBitrate(fps);
+            encodings.first.maxFramerate = fps;
+            await sender.setParameters(params);
+          }
+        }
+      } catch (e) {
+        debugPrint('切换帧率档位失败: $e');
+      }
+    }
+  }
+
+  /// SDP 起步码率提速:给 m=video 段的编码格式追加 x-google-start/min-bitrate。
+  /// 编码器默认 ~300kbps 起步、需数秒爬升,爬升期的模糊会被感知为"卡/糊";
+  /// 起步值随帧率档位走(60fps→3M,120→6M,165→8M 封顶)。失败回退原 SDP。
+  String _boostVideoStartBitrate(String sdp) {
+    final extra =
+        'x-google-start-bitrate=${fpsStartBitrate(shareFps)};x-google-min-bitrate=1200';
+    try {
+      final newline = sdp.contains('\r\n') ? '\r\n' : '\n';
+      final lines = sdp.split(RegExp(r'\r?\n'));
+      final out = <String>[];
+      var inVideo = false;
+      var fmtpDone = false;
+      final fmtpRe = RegExp(r'^a=fmtp:(\d+)(.*)$');
+      final rtpmapRe = RegExp(r'^a=rtpmap:(\d+) [^ ]+/90000');
+      for (final line in lines) {
+        if (line.startsWith('m=')) {
+          inVideo = line.startsWith('m=video');
+        }
+        if (inVideo) {
+          final fmtp = fmtpRe.firstMatch(line);
+          if (fmtp != null) {
+            fmtpDone = true;
+            final rest = fmtp.group(2) ?? '';
+            if (!rest.contains('x-google-start-bitrate')) {
+              out.add(rest.trim().isEmpty
+                  ? 'a=fmtp:${fmtp.group(1)} $extra'
+                  : 'a=fmtp:${fmtp.group(1)}$rest;$extra');
+              continue;
+            }
+          } else if (!fmtpDone) {
+            // 无 fmtp 行(如 VP8):在第一个视频 rtpmap 后补一行
+            final pt = rtpmapRe.firstMatch(line);
+            if (pt != null) {
+              out.add(line);
+              out.add('a=fmtp:${pt.group(1)} $extra');
+              fmtpDone = true;
+              continue;
+            }
+          }
+        }
+        out.add(line);
+      }
+      return out.join(newline);
+    } catch (_) {
+      return sdp;
     }
   }
 
@@ -623,12 +750,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
           await _channel.invokeMethod('startCaptureService') as bool?;
       debugPrint('前台服务就绪: ${serviceOk ?? false}');
 
-      // 4. 获取屏幕视频流(授权已缓存,不会再弹第二次)
       // 4. 获取屏幕视频流(授权已缓存,不会再弹第二次)。
-      //    显式约束帧率 30:屏幕滚动/动画才流畅;分辨率交由系统按屏幕给。
+      //    帧率档位写入约束(libwebrtc 屏幕采集实际随内容更新率,
+      //    此处作为声明;真正的闸门是发送端 maxFramerate)。
       screenStream = await navigator.mediaDevices.getDisplayMedia({
         'video': {
-          'frameRate': 30,
+          'frameRate': shareFps,
         },
         'audio': false,
       });
@@ -902,11 +1029,48 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     }
   }
 
+  /// 帧率档位芯片。共享前在弹窗内选择、共享中在控制栏热切换
+  Widget _fpsChip(int fps, {VoidCallback? afterTap}) {
+    final selected = shareFps == fps;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () {
+        _setFpsTier(fps);
+        afterTap?.call();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? _brandLight : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: selected ? _brand : const Color(0xFFE2E8F0),
+              width: selected ? 1.4 : 1),
+        ),
+        child: Text('$fps',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected ? _brand : const Color(0xFF475569))),
+      ),
+    );
+  }
+
   Future<String?> _pickAudioMode() async {
     return showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheetState) {
+        final fpsSection = Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: kFpsTiers
+                  .map((f) => _fpsChip(f, afterTap: () => setSheetState(() {})))
+                  .toList()),
+        );
+        return Container(
         decoration:
             const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
         child: SafeArea(
@@ -944,6 +1108,16 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                 ),
               );
             }),
+            const SizedBox(height: 8),
+            const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20),
+                child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('帧率(实际受屏幕刷新率限制)',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF64748B))))),
+            const SizedBox(height: 8),
+            fpsSection,
             const SizedBox(height: 4),
             Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -953,7 +1127,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             const SizedBox(height: 12),
           ]),
         ),
-      ),
+        );
+      }),
     );
   }
 
@@ -1513,6 +1688,23 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                       return _modeChip(m['value']!, _shortModeLabel(m['value']!),
                           onTap: () => setAudioMode(m['value']!));
                     })),
+            const SizedBox(height: 8),
+            SizedBox(
+                height: 34,
+                child: Row(children: [
+                  const SizedBox(
+                      width: 40,
+                      child: Text('帧率',
+                          style: TextStyle(fontSize: 12, color: _sub))),
+                  const SizedBox(width: 4),
+                  Expanded(
+                      child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: kFpsTiers.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) =>
+                              _fpsChip(kFpsTiers[index]))),
+                ])),
             const SizedBox(height: 10),
             Row(children: [
               const SizedBox(
