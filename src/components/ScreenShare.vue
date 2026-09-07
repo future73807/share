@@ -607,8 +607,9 @@ const applyVideoSenderParams = (peerConnection) => {
   } catch (_) {}
 }
 
-// 编解码偏好:H264(硬件编码)优先。屏幕内容 VP8 软编(libvpx)吞吐
-// 只有 20-30fps@2.5K,是高帧率的首要瓶颈;H264 走 GPU/MediaCodec 硬编。
+// 编解码偏好:H264(硬件编码)优先,高 Profile(640c…)再优先于受限
+// 基线——同码率下质量更高、动态内容伪影更少。屏幕内容 VP8 软编(libvpx)
+// 吞吐只有 20-30fps@2.5K,是高帧率的首要瓶颈;H264 走 GPU/MediaCodec 硬编。
 // 仅重排序、不剔除,对端不支持 H264 时仍可回退 VP8。
 const preferHardwareVideoCodecs = (peerConnection) => {
   try {
@@ -616,9 +617,12 @@ const preferHardwareVideoCodecs = (peerConnection) => {
     if (!caps || !caps.codecs) return
     const score = (c) => {
       const m = (c.mimeType || '').toLowerCase()
-      if (m === 'video/h264') return 0
-      if (m === 'video/vp8') return 1
-      return 2
+      if (m === 'video/h264') {
+        const fmtp = (c.sdpFmtpLine || '').toLowerCase()
+        return fmtp.includes('profile-id=640c') ? 0 : 1
+      }
+      if (m === 'video/vp8') return 2
+      return 3
     }
     const sorted = [...caps.codecs].sort((a, b) => score(a) - score(b))
     peerConnection.getTransceivers().forEach(t => {
@@ -698,12 +702,12 @@ const createPeerConnection = (socketId) => {
 
   // 接收远端轨道:合成到同一 MediaStream,视频+多路音频一起播放
   peerConnection.ontrack = (event) => {
-    // 低延迟:压缩接收端抖动缓冲目标(自适应默认可达数百毫秒)。
-    // 视频尽快渲染(0 = 尽量低),音频留 40ms 防抖;单位为秒。
-    // 屏幕内容偶发花屏/丢帧可接受(局域网重传一个 RTT 内恢复)。
+    // 接收缓冲:视频留 50ms 小缓冲换取稳定渲染节奏(jitterBufferTarget=0
+    // 时任何网络抖动都会被即时播出,表现为细线/拖影与轻微顿挫;
+    // 50ms 的延迟代价不可感知)。音频留 40ms 防抖;单位为秒。
     const recv = event.receiver
     if (recv) {
-      const target = event.track.kind === 'video' ? 0 : 0.04
+      const target = event.track.kind === 'video' ? 0.05 : 0.04
       try {
         if ('jitterBufferTarget' in recv) recv.jitterBufferTarget = target
         else if ('playoutDelayHint' in recv) recv.playoutDelayHint = target

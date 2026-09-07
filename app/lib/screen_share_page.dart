@@ -63,6 +63,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   bool isJoining = false;
   String audioMode = audioModeMixed;
   int shareFps = kDefaultFps; // 帧率档位(60/90/120/144/165)
+  // 设备屏幕刷新率(Hz)。屏幕采集帧率不可能超过屏幕刷新率,档位超过时
+  // 采集/编码节奏失配会出现细线与拖影,闸门一律钳到 effectiveFps。
+  double? _displayRefresh;
+  double? _displayMaxRefresh;
+  Timer? _refreshResyncTimer;
   String statusText = '';
   List<Map<String, dynamic>> users = [];
 
@@ -99,6 +104,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     initializeSocket();
     _loadSavedData();
     _setupNativeCallbacks();
+    _queryDisplayRefresh();
     // 浅色背景上状态栏图标用黑色
     _applyDarkStatusBarIcons();
   }
@@ -138,6 +144,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   @override
   void dispose() {
     _levelTimer?.cancel();
+    _refreshResyncTimer?.cancel();
     _roomController.dispose();
     _nickController.dispose();
     _serverController.dispose();
@@ -555,6 +562,85 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   // ============ 屏幕共享 ============
 
+  /// 实际生效的帧率上限 = min(所选档位, 当前屏幕刷新率)。
+  /// 屏幕内容更新率以刷新率为天花板,编码闸门超过它不仅无收益,
+  /// 还会因采集/编码节奏失配出现细线与拖影。
+  int get effectiveFps {
+    final r = _displayRefresh;
+    if (r == null || r <= 0) return shareFps;
+    final cap = r.round();
+    return shareFps > cap ? cap : shareFps;
+  }
+
+  /// 查询当前屏幕刷新率与设备支持的最高档
+  Future<void> _queryDisplayRefresh() async {
+    try {
+      final r = await _channel.invokeMethod('getDisplayInfo');
+      if (r is Map) {
+        final cur = (r['refreshRate'] as num?)?.toDouble();
+        final max = (r['maxSupported'] as num?)?.toDouble();
+        if (mounted) {
+          setState(() {
+            if (cur != null && cur > 0) _displayRefresh = cur;
+            if (max != null && max > 0) _displayMaxRefresh = max;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// 档位高于当前刷新率但设备支持更高档时,请求系统切到匹配的
+  /// 显示模式(与当前分辨率相同),让高帧率档位真正可用。
+  Future<void> _syncDisplayRefreshForTier() async {
+    await _queryDisplayRefresh();
+    if (effectiveFps >= shareFps) return; // 当前刷新率已覆盖所选档位
+    final maxSupported = _displayMaxRefresh ?? 0;
+    if (maxSupported < shareFps) return; // 硬件不支持,保持钳制
+    try {
+      await _channel
+          .invokeMethod('setPreferredRefreshRate', {'rate': shareFps.toDouble()});
+    } catch (_) {}
+    // 显示模式切换需要数百毫秒,稍后复查并校准闸门
+    _refreshResyncTimer?.cancel();
+    _refreshResyncTimer = Timer(const Duration(milliseconds: 1200), () async {
+      await _queryDisplayRefresh();
+      if (isSharing) await _applyFpsToAllSenders();
+    });
+  }
+
+  /// 恢复系统默认刷新模式(停止共享/离开房间时调用)
+  Future<void> _restoreDisplayRefresh() async {
+    _refreshResyncTimer?.cancel();
+    try {
+      await _channel.invokeMethod('setPreferredRefreshRate', {'rate': 0.0});
+    } catch (_) {}
+  }
+
+  /// 把当前 effectiveFps/码率应用到所有已建立连接的视频 sender
+  Future<void> _applyFpsToAllSenders() async {
+    final fps = effectiveFps;
+    for (final pc in peerConnections.values) {
+      try {
+        final senders = await pc.getSenders();
+        for (final sender in senders) {
+          final track = sender.track;
+          if (track == null || track.kind != 'video') continue;
+          final params = sender.parameters;
+          final encodings = params.encodings;
+          if (encodings != null && encodings.isNotEmpty) {
+            encodings.first.maxBitrate = fpsBitrate(fps);
+            encodings.first.maxFramerate = fps;
+            await sender.setParameters(params);
+          }
+        }
+      } catch (e) {
+        debugPrint('应用帧率参数失败: $e');
+      }
+    }
+  }
+
+  /// 屏幕共享视频发送参数。flutter_webrtc 默认发送码率用 WebRTC 低默认值:
+
   /// 屏幕共享视频发送参数。flutter_webrtc 默认发送码率用 WebRTC 低默认值:
   /// 带宽一波动编码器就不停降/升分辨率——表现为闪烁与忽清忽糊,帧队列
   /// 堆积则延迟越来越高。这里固定分辨率(maintain-resolution,只降帧不降
@@ -563,6 +649,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   Future<void> _applyScreenSenderParams(RTCPeerConnection pc) async {
     try {
       final senders = await pc.getSenders();
+      final fps = effectiveFps;
       for (final sender in senders) {
         final track = sender.track;
         if (track == null || track.kind != 'video') continue;
@@ -571,8 +658,8 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             RTCDegradationPreference.MAINTAIN_RESOLUTION;
         final encodings = params.encodings;
         if (encodings != null && encodings.isNotEmpty) {
-          encodings.first.maxBitrate = fpsBitrate(shareFps);
-          encodings.first.maxFramerate = shareFps;
+          encodings.first.maxBitrate = fpsBitrate(fps);
+          encodings.first.maxFramerate = fps;
         }
         await sender.setParameters(params);
       }
@@ -581,9 +668,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     }
   }
 
-  /// 编解码偏好:H264(硬件编码)优先。屏幕内容 VP8 软编在手机上吞吐
-  /// 不足(1080p@30 即吃满 CPU,是"卡"的根源之一);H264 走 MediaCodec
-  /// 硬编,高帧率无压力。仅重排序、不剔除,对端不支持时仍回退 VP8。
+  /// 编解码偏好:H264(硬件编码)优先,高 Profile(640c…)再优先于
+  /// 受限基线——同码率下质量更高、动态内容伪影更少。屏幕内容 VP8 软编
+  /// 在手机上吞吐不足(1080p@30 即吃满 CPU,是"卡"的根源之一);H264
+  /// 走 MediaCodec 硬编,高帧率无压力。仅重排序、不剔除,对端不支持
+  /// 高 Profile 时仍可回退基线/VP8。
   Future<void> _preferHardwareVideoCodec(RTCPeerConnection pc) async {
     try {
       final caps = await getRtpSenderCapabilities('video');
@@ -591,9 +680,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       if (codecs == null || codecs.isEmpty) return;
       int score(RTCRtpCodecCapability c) {
         final m = c.mimeType.toLowerCase();
-        if (m == 'video/h264') return 0;
-        if (m == 'video/vp8') return 1;
-        return 2;
+        if (m == 'video/h264') {
+          final fmtp = (c.sdpFmtpLine ?? '').toLowerCase();
+          return fmtp.contains('profile-id=640c') ? 0 : 1;
+        }
+        if (m == 'video/vp8') return 2;
+        return 3;
       }
 
       final sorted = [...codecs]..sort((a, b) => score(a).compareTo(score(b)));
@@ -611,30 +703,19 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   }
 
   /// 切换帧率档位(共享前选择持久化;共享中热切换所有已建立连接的
-  /// 发送参数,免重协商)。
+  /// 发送参数,免重协商)。档位高于当前刷新率时,编码闸门钳到
+  /// effectiveFps;设备支持更高刷新率则自动请求切换显示模式。
   Future<void> _setFpsTier(int fps) async {
     if (!kFpsTiers.contains(fps) || fps == shareFps) return;
     setState(() => shareFps = fps);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('shareFps', fps);
-    if (!isSharing) return;
-    for (final pc in peerConnections.values) {
-      try {
-        final senders = await pc.getSenders();
-        for (final sender in senders) {
-          final track = sender.track;
-          if (track == null || track.kind != 'video') continue;
-          final params = sender.parameters;
-          final encodings = params.encodings;
-          if (encodings != null && encodings.isNotEmpty) {
-            encodings.first.maxBitrate = fpsBitrate(fps);
-            encodings.first.maxFramerate = fps;
-            await sender.setParameters(params);
-          }
-        }
-      } catch (e) {
-        debugPrint('切换帧率档位失败: $e');
-      }
+    if (isSharing) {
+      await _syncDisplayRefreshForTier();
+      await _applyFpsToAllSenders();
+    } else {
+      // 共享前选择:仅查询刷新率更新钳制与提示
+      await _queryDisplayRefresh();
     }
   }
 
@@ -643,7 +724,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   /// 起步值随帧率档位走(60fps→3M,120→6M,165→8M 封顶)。失败回退原 SDP。
   String _boostVideoStartBitrate(String sdp) {
     final extra =
-        'x-google-start-bitrate=${fpsStartBitrate(shareFps)};x-google-min-bitrate=1200';
+        'x-google-start-bitrate=${fpsStartBitrate(effectiveFps)};x-google-min-bitrate=1200';
     try {
       final newline = sdp.contains('\r\n') ? '\r\n' : '\n';
       final lines = sdp.split(RegExp(r'\r?\n'));
@@ -751,11 +832,11 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       debugPrint('前台服务就绪: ${serviceOk ?? false}');
 
       // 4. 获取屏幕视频流(授权已缓存,不会再弹第二次)。
-      //    帧率档位写入约束(libwebrtc 屏幕采集实际随内容更新率,
-      //    此处作为声明;真正的闸门是发送端 maxFramerate)。
+      //    帧率约束取 effectiveFps(档位钳到屏幕刷新率,超过会出现
+      //    细线/拖影);真正的闸门仍是发送端 maxFramerate。
       screenStream = await navigator.mediaDevices.getDisplayMedia({
         'video': {
-          'frameRate': shareFps,
+          'frameRate': effectiveFps,
         },
         'audio': false,
       });
@@ -837,6 +918,9 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
           const Duration(milliseconds: 400), (_) => _pollLevel());
       socket?.emit('start-sharing');
 
+      // 所选档位高于当前刷新率且设备支持更高档时,请求切换显示模式
+      await _syncDisplayRefreshForTier();
+
       // 向房间内已有观众推送(覆盖 room-users 时序)
       for (final u in users) {
         final sid = u['socketId'] as String?;
@@ -866,6 +950,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   Future<void> _cleanupShare() async {
     _levelTimer?.cancel();
+    await _restoreDisplayRefresh();
     if (mounted) setState(() => _audioLevel = 0);
     try {
       await _channel.invokeMethod('stopAllCapture');
@@ -1029,9 +1114,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     }
   }
 
-  /// 帧率档位芯片。共享前在弹窗内选择、共享中在控制栏热切换
+  /// 帧率档位芯片。共享前在弹窗内选择、共享中在控制栏热切换。
+  /// 超过当前屏幕刷新率的档位置灰显示(会钳到刷新率,或自动提档中)。
   Widget _fpsChip(int fps, {VoidCallback? afterTap}) {
     final selected = shareFps == fps;
+    final refreshCap = (_displayRefresh ?? 0).round();
+    final beyondDevice = refreshCap > 0 && fps > refreshCap;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: () {
@@ -1051,9 +1139,32 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             style: TextStyle(
                 fontSize: 13,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected ? _brand : const Color(0xFF475569))),
+                color: selected
+                    ? _brand
+                    : (beyondDevice
+                        ? const Color(0xFFB6C2D4)
+                        : const Color(0xFF475569)))),
       ),
     );
+  }
+
+  /// 帧率行下方的设备刷新率提示(未检测到时不占位)
+  Widget _fpsHint() {
+    final cap = (_displayRefresh ?? 0).round();
+    if (cap <= 0) return const SizedBox.shrink();
+    final clamped = effectiveFps < shareFps;
+    String text;
+    if (clamped && isSharing && (_displayMaxRefresh ?? 0) >= shareFps) {
+      text = '设备刷新率 ${cap}Hz,已请求提升屏幕刷新率以匹配 ${shareFps} 档';
+    } else if (clamped) {
+      text = '设备刷新率 ${cap}Hz,实际帧率将限制为 $effectiveFps';
+    } else {
+      text = '设备刷新率 ${cap}Hz,可流畅支撑当前档位';
+    }
+    return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(text,
+            style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))));
   }
 
   Future<String?> _pickAudioMode() async {
@@ -1118,6 +1229,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                             fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF64748B))))),
             const SizedBox(height: 8),
             fpsSection,
+            Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Align(
+                    alignment: Alignment.centerLeft, child: _fpsHint())),
             const SizedBox(height: 4),
             Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -1401,41 +1516,42 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                   Expanded(flex: 3, child: _buildVideoArea()),
                   const SizedBox(width: 12),
                   membersCollapsed
-                      ? GestureDetector(
-                          onTap: () =>
-                              setState(() => membersCollapsed = false),
-                          child: Container(
-                              width: 40,
-                              decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 16,
-                                        offset: const Offset(0, 6))
-                                  ]),
-                              child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: const [
-                                    Icon(Icons.people_outline,
-                                        size: 20, color: Color(0xFF64748B)),
-                                    SizedBox(height: 6),
-                                    Icon(Icons.chevron_left,
-                                        size: 18, color: Color(0xFF94A3B8)),
-                                    SizedBox(height: 2),
-                                    Text('成员',
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            color: Color(0xFF64748B))),
-                                  ])),
-                        )
+                      ? _buildMembersBubble()
                       : SizedBox(width: 150, child: _buildUserList()),
                 ]),
               ),
       ),
       if (!isFullScreen) _buildControlBar(),
     ]);
+  }
+
+  /// 成员面板收起后的小气泡条(视频区右侧垂直居中,点击展开面板)
+  Widget _buildMembersBubble() {
+    return GestureDetector(
+      onTap: () => setState(() => membersCollapsed = false),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(999),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 16,
+                offset: const Offset(0, 6))
+          ],
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.people_outline, size: 16, color: Color(0xFF64748B)),
+          const SizedBox(width: 5),
+          Text('${users.length}',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF334155))),
+        ]),
+      ),
+    );
   }
 
   Widget _buildVideoArea() {
@@ -1445,11 +1561,22 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(radius),
         color: const Color(0xFF0B1220),
-        border: Border.all(
-            color: live ? _brand.withOpacity(0.55) : const Color(0xFF1E293B),
-            width: live ? 1.5 : 1),
-        boxShadow: live
-            ? [BoxShadow(color: _brand.withOpacity(0.22), blurRadius: 18, offset: const Offset(0, 6))]
+        // 全屏时不能有描边与光晕:品牌蓝的边框/阴影会在画面外圈
+        // 形成一圈蓝边(普通模式保留,用于标识"直播中")
+        border: isFullScreen
+            ? null
+            : Border.all(
+                color: live
+                    ? _brand.withOpacity(0.55)
+                    : const Color(0xFF1E293B),
+                width: live ? 1.5 : 1),
+        boxShadow: (live && !isFullScreen)
+            ? [
+                BoxShadow(
+                    color: _brand.withOpacity(0.22),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6))
+              ]
             : null,
       ),
       child: ClipRRect(
@@ -1564,7 +1691,6 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
 
   Widget _buildUserList() {
     return Container(
-      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
@@ -1575,69 +1701,91 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
               offset: const Offset(0, 6))
         ],
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      child: Stack(children: [
+        // 内容区:左侧留出收起把手的宽度
         Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Row(children: [
-              Expanded(
-                  child: Text('成员 · ${users.length}',
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: _sub))),
-              // 收起成员列表
-              GestureDetector(
-                  onTap: () => setState(() => membersCollapsed = true),
-                  child: const Icon(Icons.chevron_right,
+          padding: const EdgeInsets.fromLTRB(34, 12, 12, 12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 8),
+                child: Text('成员 · ${users.length}',
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: _sub))),
+            Expanded(
+                child: users.isEmpty
+                    ? Center(
+                        child: Text('暂无成员',
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFFA6B2C4))))
+                    // 显式 padding=0:去掉 ListView 隐式继承的 MediaQuery
+                    // 安全区内边距(首个成员上方曾出现一段空白)
+                    : ListView.separated(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        itemCount: users.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 6),
+                        itemBuilder: (context, index) {
+                          final user = users[index];
+                          final nick = (user['nickname'] ?? '') as String;
+                          final isSelf = nick == nickname;
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 6),
+                            decoration: BoxDecoration(
+                                color: const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(12)),
+                            child: Row(children: [
+                              Container(
+                                  width: 30,
+                                  height: 30,
+                                  alignment: Alignment.center,
+                                  decoration: const BoxDecoration(
+                                      color: _brand, shape: BoxShape.circle),
+                                  child: Text(
+                                      nick.isNotEmpty
+                                          ? nick[0].toUpperCase()
+                                          : '?',
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700))),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                  child: Text(nick,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                          color: _ink))),
+                              if (isSelf)
+                                const Text('我',
+                                    style: TextStyle(
+                                        fontSize: 11, color: _sub)),
+                            ]),
+                          );
+                        })),
+          ]),
+        ),
+        // 收起把手:面板内部、贴左边缘、垂直居中(箭头向右=收起)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Material(
+            color: const Color(0xFFF1F5F9),
+            borderRadius:
+                const BorderRadius.horizontal(right: Radius.circular(14)),
+            child: InkWell(
+              borderRadius:
+                  const BorderRadius.horizontal(right: Radius.circular(14)),
+              onTap: () => setState(() => membersCollapsed = true),
+              child: const SizedBox(
+                  width: 22,
+                  height: 64,
+                  child: Icon(Icons.chevron_right,
                       size: 18, color: Color(0xFF94A3B8))),
-            ])),
-        Expanded(
-            child: users.isEmpty
-                ? Center(
-                    child: Text('暂无成员',
-                        style: const TextStyle(
-                            fontSize: 12, color: Color(0xFFA6B2C4))))
-                : ListView.separated(
-                    itemCount: users.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final user = users[index];
-                      final nick = (user['nickname'] ?? '') as String;
-                      final isSelf = nick == nickname;
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 6),
-                        decoration: BoxDecoration(
-                            color: const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(12)),
-                        child: Row(children: [
-                          Container(
-                              width: 30,
-                              height: 30,
-                              alignment: Alignment.center,
-                              decoration: const BoxDecoration(
-                                  color: _brand, shape: BoxShape.circle),
-                              child: Text(
-                                  nick.isNotEmpty ? nick[0].toUpperCase() : '?',
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700))),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: Text(nick,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      color: _ink))),
-                          if (isSelf)
-                            const Text('我',
-                                style: TextStyle(
-                                    fontSize: 11, color: _sub)),
-                        ]),
-                      );
-                    })),
+            ),
+          ),
+        ),
       ]),
     );
   }
@@ -1705,6 +1853,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                           itemBuilder: (context, index) =>
                               _fpsChip(kFpsTiers[index]))),
                 ])),
+            Padding(
+                padding: const EdgeInsets.only(left: 44),
+                child: Align(
+                    alignment: Alignment.centerLeft, child: _fpsHint())),
             const SizedBox(height: 10),
             Row(children: [
               const SizedBox(

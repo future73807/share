@@ -223,6 +223,81 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     "micFeed" to micFeedActive
                 ))
             }
+            "getDisplayInfo" -> {
+                // 智能检测屏幕刷新率:当前模式刷新率 = 帧率上限的权威闸门
+                // (采集帧率超过它会出现细线/拖影);maxSupported = 设备支持的最高档。
+                val act = activity
+                if (act == null) {
+                    result.success(null)
+                    return
+                }
+                act.runOnUiThread {
+                    try {
+                        val display = currentDisplay(act)
+                        if (display == null) {
+                            result.success(null)
+                            return@runOnUiThread
+                        }
+                        var maxSupported = display.refreshRate.toDouble()
+                        if (Build.VERSION.SDK_INT >= 23) {
+                            for (m in display.supportedModes) {
+                                if (m.refreshRate > maxSupported) maxSupported = m.refreshRate.toDouble()
+                            }
+                        }
+                        result.success(mapOf(
+                            "refreshRate" to display.refreshRate.toDouble(),
+                            "maxSupported" to maxSupported
+                        ))
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "getDisplayInfo 失败", t)
+                        result.success(null)
+                    }
+                }
+            }
+            "setPreferredRefreshRate" -> {
+                // 共享时请求与所选帧率匹配的显示模式(设备支持才生效);
+                // rate<=0 恢复系统默认。按当前分辨率匹配模式,避免连带切分辨率。
+                val act = activity
+                if (act == null) {
+                    result.success(false)
+                    return
+                }
+                val rate = (call.argument<Number>("rate")?.toDouble()) ?: 0.0
+                act.runOnUiThread {
+                    try {
+                        val w = act.window
+                        val lp = w.attributes
+                        var applied = false
+                        val display = currentDisplay(act)
+                        if (rate > 0 && display != null && Build.VERSION.SDK_INT >= 23) {
+                            val cur = display.mode
+                            var best: android.view.Display.Mode? = null
+                            for (m in display.supportedModes) {
+                                if (m.physicalWidth != cur.physicalWidth ||
+                                    m.physicalHeight != cur.physicalHeight) continue
+                                if (m.refreshRate + 0.1f < rate.toFloat()) continue
+                                if (best == null || m.refreshRate < best!!.refreshRate) best = m
+                            }
+                            if (best != null) {
+                                lp.preferredDisplayModeId = best.modeId
+                                applied = true
+                                Log.i(TAG, "请求刷新率 ${best.refreshRate}Hz(mode=${best.modeId})")
+                            }
+                        }
+                        if (rate <= 0) {
+                            if (Build.VERSION.SDK_INT >= 23) lp.preferredDisplayModeId = 0
+                            @Suppress("DEPRECATION")
+                            lp.preferredRefreshRate = 0f
+                            applied = true
+                        }
+                        w.attributes = lp
+                        result.success(applied)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "setPreferredRefreshRate 失败", t)
+                        result.success(false)
+                    }
+                }
+            }
             "enterImmersive" -> {
                 // 真·全屏:原生 WindowInsetsController 隐藏状态栏+导航栏。
                 // SystemChrome 的 immersive 模式在部分系统(MIUI 等)会被覆盖失效;
@@ -292,6 +367,18 @@ class ScreenSharePlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             }
             else -> result.notImplemented()
         }
+    }
+
+    /** 兼容取当前 Display(API 30+ 用 activity.display,旧系统用 WindowManager) */
+    private fun currentDisplay(act: Activity): android.view.Display? = try {
+        if (Build.VERSION.SDK_INT >= 30) {
+            act.display
+        } else {
+            @Suppress("DEPRECATION")
+            act.windowManager.defaultDisplay
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     /**
