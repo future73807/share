@@ -1537,19 +1537,29 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
   }
 
   /// 成员面板收起后的半透明小气泡条:叠加在视频区右缘之上,
-  /// 右侧直角贴合边缘、左侧圆角,内含向左箭头,点击展开面板
+  /// 右侧直角贴合边缘、左侧圆角,含向左箭头+人形图标+成员数,点击展开面板
   Widget _buildMembersBubble() {
     return GestureDetector(
       onTap: () => setState(() => membersCollapsed = false),
       child: Container(
-        width: 30,
         height: 64,
+        padding: const EdgeInsets.only(left: 8, right: 10),
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.6),
           borderRadius:
               const BorderRadius.horizontal(left: Radius.circular(16)),
         ),
-        child: const Icon(Icons.chevron_left, size: 20, color: Color(0xFF334155)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.chevron_left, size: 20, color: Color(0xFF334155)),
+          const SizedBox(width: 4),
+          const Icon(Icons.people_outline, size: 16, color: Color(0xFF334155)),
+          const SizedBox(width: 4),
+          Text('${users.length}',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF334155))),
+        ]),
       ),
     );
   }
