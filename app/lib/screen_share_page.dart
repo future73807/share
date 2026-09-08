@@ -1390,7 +1390,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
               Row(children: [
                 // logo 图标相对右侧文字整体略下移一点(视觉居中对齐标题)
                 Padding(
-                    padding: const EdgeInsets.only(top: 6),
+                    padding: const EdgeInsets.only(top: 9),
                     child: const BrandLogo(size: 52)),
                 const SizedBox(width: 14),
                 const Column(
