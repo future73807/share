@@ -1542,23 +1542,30 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
     return GestureDetector(
       onTap: () => setState(() => membersCollapsed = false),
       child: Container(
-        height: 64,
-        padding: const EdgeInsets.only(left: 8, right: 10),
+        height: 32,
+        padding: const EdgeInsets.only(left: 6, right: 8),
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.6),
           borderRadius:
-              const BorderRadius.horizontal(left: Radius.circular(16)),
+              const BorderRadius.horizontal(left: Radius.circular(12)),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.chevron_left, size: 20, color: Color(0xFF334155)),
-          const SizedBox(width: 4),
-          const Icon(Icons.people_outline, size: 16, color: Color(0xFF334155)),
-          const SizedBox(width: 4),
-          Text('${users.length}',
-              style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF334155))),
+          const Icon(Icons.chevron_left, size: 16, color: Color(0xFF334155)),
+          const SizedBox(width: 3),
+          // 人形图标与成员数上下两行,宽度更窄
+          Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.people_outline,
+                    size: 14, color: Color(0xFF334155)),
+                Text('${users.length}',
+                    style: const TextStyle(
+                        fontSize: 10,
+                        height: 1.1,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF334155))),
+              ]),
         ]),
       ),
     );
@@ -1714,7 +1721,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       child: Stack(children: [
         // 内容区:左侧留出收起把手的宽度
         Padding(
-          padding: const EdgeInsets.fromLTRB(34, 12, 12, 12),
+          padding: const EdgeInsets.fromLTRB(27, 12, 12, 12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Padding(
                 padding: const EdgeInsets.only(left: 4, bottom: 8),
@@ -1789,10 +1796,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                   const BorderRadius.horizontal(right: Radius.circular(14)),
               onTap: () => setState(() => membersCollapsed = true),
               child: const SizedBox(
-                  width: 22,
-                  height: 64,
+                  width: 15,
+                  height: 32,
                   child: Icon(Icons.chevron_right,
-                      size: 18, color: Color(0xFF94A3B8))),
+                      size: 15, color: Color(0xFF94A3B8))),
             ),
           ),
         ),
