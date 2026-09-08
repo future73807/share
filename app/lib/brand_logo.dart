@@ -42,32 +42,34 @@ class _LaptopSharePainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = w * 0.055;
 
-    // 屏幕:描边圆角矩形 (0.24,0.20)-(0.76,0.60)
+    // 白色图形整体下移 0.05:原纵向范围 0.20~0.72 的中心是 0.46,
+    // 比方块中心 0.50 偏上,下移后范围 0.25~0.77、中心 0.51,视觉居中。
+    // 屏幕:描边圆角矩形 (0.24,0.25)-(0.76,0.65)
     final screen = RRect.fromRectAndRadius(
-      Rect.fromLTWH(w * 0.24, h * 0.20, w * 0.52, h * 0.40),
+      Rect.fromLTWH(w * 0.24, h * 0.25, w * 0.52, h * 0.40),
       Radius.circular(w * 0.035),
     );
     canvas.drawRRect(screen, stroke);
 
-    // 屏幕内向右箭头:杆 (0.34,0.355)-(0.50,0.445) + 三角头
+    // 屏幕内向右箭头:杆 (0.34,0.405)-(0.50,0.495) + 三角头
     final stem = RRect.fromRectAndRadius(
-      Rect.fromLTWH(w * 0.34, h * 0.355, w * 0.16, h * 0.09),
+      Rect.fromLTWH(w * 0.34, h * 0.405, w * 0.16, h * 0.09),
       Radius.circular(w * 0.02),
     );
     canvas.drawRRect(stem, white);
     final tri = Path()
-      ..moveTo(w * 0.49, h * 0.30)
-      ..lineTo(w * 0.49, h * 0.50)
-      ..lineTo(w * 0.635, h * 0.40)
+      ..moveTo(w * 0.49, h * 0.35)
+      ..lineTo(w * 0.49, h * 0.55)
+      ..lineTo(w * 0.635, h * 0.45)
       ..close();
     canvas.drawPath(tri, white);
 
-    // 底座:(0.30,0.62)(0.70,0.62)(0.76,0.72)(0.24,0.72)
+    // 底座:(0.30,0.67)(0.70,0.67)(0.76,0.77)(0.24,0.77)
     final base = Path()
-      ..moveTo(w * 0.30, h * 0.62)
-      ..lineTo(w * 0.70, h * 0.62)
-      ..lineTo(w * 0.76, h * 0.72)
-      ..lineTo(w * 0.24, h * 0.72)
+      ..moveTo(w * 0.30, h * 0.67)
+      ..lineTo(w * 0.70, h * 0.67)
+      ..lineTo(w * 0.76, h * 0.77)
+      ..lineTo(w * 0.24, h * 0.77)
       ..close();
     canvas.drawPath(base, white);
   }

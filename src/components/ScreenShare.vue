@@ -5,12 +5,13 @@
       <div class="join-layout">
         <div class="join-hero">
           <div class="hero-icon">
+            <!-- 白色图形整体下移 0.05(原中心 0.46 偏上,现 0.51 居中) -->
             <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true">
-              <rect x="5.8" y="4.8" width="12.4" height="9.6" rx="0.9"
+              <rect x="5.8" y="6" width="12.4" height="9.6" rx="0.9"
                     fill="none" stroke="currentColor" stroke-width="1.2"/>
-              <rect x="8.2" y="8.5" width="3.8" height="2.2" rx="0.5" fill="currentColor"/>
-              <polygon points="11.8,7.2 11.8,12 15.3,9.6" fill="currentColor"/>
-              <polygon points="7.2,14.9 16.8,14.9 18.3,17.3 5.7,17.3" fill="currentColor"/>
+              <rect x="8.2" y="9.7" width="3.8" height="2.2" rx="0.5" fill="currentColor"/>
+              <polygon points="11.8,8.4 11.8,13.2 15.3,10.8" fill="currentColor"/>
+              <polygon points="7.2,16.1 16.8,16.1 18.3,18.5 5.7,18.5" fill="currentColor"/>
             </svg>
           </div>
           <h1 class="hero-title">屏幕共享</h1>
@@ -24,12 +25,13 @@
         <div class="join-card">
         <div class="brand-header">
           <div class="brand-icon">
+            <!-- 白色图形整体下移 0.05(与 hero-icon、App BrandLogo 一致) -->
             <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-              <rect x="5.8" y="4.8" width="12.4" height="9.6" rx="0.9"
+              <rect x="5.8" y="6" width="12.4" height="9.6" rx="0.9"
                     fill="none" stroke="currentColor" stroke-width="1.3"/>
-              <rect x="8.2" y="8.5" width="3.8" height="2.2" rx="0.5" fill="currentColor"/>
-              <polygon points="11.8,7.2 11.8,12 15.3,9.6" fill="currentColor"/>
-              <polygon points="7.2,14.9 16.8,14.9 18.3,17.3 5.7,17.3" fill="currentColor"/>
+              <rect x="8.2" y="9.7" width="3.8" height="2.2" rx="0.5" fill="currentColor"/>
+              <polygon points="11.8,8.4 11.8,13.2 15.3,10.8" fill="currentColor"/>
+              <polygon points="7.2,16.1 16.8,16.1 18.3,18.5 5.7,18.5" fill="currentColor"/>
             </svg>
           </div>
           <div>
@@ -1066,11 +1068,6 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   flex: none;
-}
-/* 图标下移 3px,与右侧标题文字视觉居中对齐。
-   用 transform 只做绘制位移,不改变盒子高度,避免撑开行高/把下方内容推下去 */
-.brand-icon {
-  transform: translateY(3px);
 }
 .brand-icon {
   width: 48px;

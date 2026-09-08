@@ -36,7 +36,10 @@ def gradient(size):
 
 
 def draw_glyph(draw, s, k=1.0, color=WHITE):
-    """白色图形:笔记本电脑侧视,屏幕内有向右共享箭头(品牌 logo)。"""
+    """白色图形:笔记本电脑侧视,屏幕内有向右共享箭头(品牌 logo)。
+
+    纵向范围 0.25~0.77(中心 0.51),比方块中心略低一点点,视觉居中。
+    """
     def u(x, y):
         off = s * (1 - k) / 2
         return (off + x * s * k, off + y * s * k)
@@ -44,16 +47,16 @@ def draw_glyph(draw, s, k=1.0, color=WHITE):
     sw = max(3, int(0.048 * s * k))
 
     # ── 屏幕:描边圆角矩形 ──
-    draw.rounded_rectangle([u(0.24, 0.20), u(0.76, 0.60)],
+    draw.rounded_rectangle([u(0.24, 0.25), u(0.76, 0.65)],
                            radius=0.035 * s * k, outline=color, width=sw)
 
     # ── 屏幕内向右共享箭头(实心:杆 + 三角头) ──
-    draw.rounded_rectangle([u(0.34, 0.355), u(0.50, 0.445)],
+    draw.rounded_rectangle([u(0.34, 0.405), u(0.50, 0.495)],
                            radius=0.02 * s * k, fill=color)
-    draw.polygon([u(0.49, 0.30), u(0.49, 0.50), u(0.635, 0.40)], fill=color)
+    draw.polygon([u(0.49, 0.35), u(0.49, 0.55), u(0.635, 0.45)], fill=color)
 
     # ── 底座:实心梯形(左低右高微透视,简化为圆角矩形) ──
-    draw.polygon([u(0.30, 0.62), u(0.70, 0.62), u(0.76, 0.72), u(0.24, 0.72)],
+    draw.polygon([u(0.30, 0.67), u(0.70, 0.67), u(0.76, 0.77), u(0.24, 0.77)],
                  fill=color)
 
 
