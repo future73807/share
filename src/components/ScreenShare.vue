@@ -1067,6 +1067,11 @@ onUnmounted(() => {
   justify-content: center;
   flex: none;
 }
+/* 图标下移 3px,与右侧标题文字视觉居中对齐。
+   用 transform 只做绘制位移,不改变盒子高度,避免撑开行高/把下方内容推下去 */
+.brand-icon {
+  transform: translateY(3px);
+}
 .brand-icon {
   width: 48px;
   height: 48px;

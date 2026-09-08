@@ -1388,9 +1388,12 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(children: [
-                // logo 图标相对右侧文字整体略下移一点(视觉居中对齐标题)
-                Padding(
-                    padding: const EdgeInsets.only(top: 9),
+                // logo 图标下移 10px,与右侧标题文字视觉居中对齐。
+                // 必须用 Transform.translate:它只做绘制位移、不参与布局;
+                // 若用 Padding(top: n),Row 会被撑高,右侧文字列重新居中,
+                // 会把位移抵消掉一半(净效果只有 n/2),且下方内容整体下移。
+                Transform.translate(
+                    offset: const Offset(0, 10),
                     child: const BrandLogo(size: 52)),
                 const SizedBox(width: 14),
                 const Column(
@@ -1543,25 +1546,25 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       onTap: () => setState(() => membersCollapsed = false),
       child: Container(
         height: 32,
-        padding: const EdgeInsets.only(left: 6, right: 8),
+        padding: const EdgeInsets.only(left: 4, right: 5),
         decoration: BoxDecoration(
           color: Colors.white.withOpacity(0.6),
           borderRadius:
               const BorderRadius.horizontal(left: Radius.circular(12)),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.chevron_left, size: 16, color: Color(0xFF334155)),
-          const SizedBox(width: 3),
+          const Icon(Icons.chevron_left, size: 14, color: Color(0xFF334155)),
+          const SizedBox(width: 2),
           // 人形图标与成员数上下两行,宽度更窄
           Column(
               mainAxisAlignment: MainAxisAlignment.center,
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Icon(Icons.people_outline,
-                    size: 14, color: Color(0xFF334155)),
+                    size: 12, color: Color(0xFF334155)),
                 Text('${users.length}',
                     style: const TextStyle(
-                        fontSize: 10,
+                        fontSize: 9,
                         height: 1.1,
                         fontWeight: FontWeight.w700,
                         color: Color(0xFF334155))),
@@ -1721,7 +1724,7 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
       child: Stack(children: [
         // 内容区:左侧留出收起把手的宽度
         Padding(
-          padding: const EdgeInsets.fromLTRB(27, 12, 12, 12),
+          padding: const EdgeInsets.fromLTRB(32, 12, 12, 12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Padding(
                 padding: const EdgeInsets.only(left: 4, bottom: 8),
@@ -1796,10 +1799,10 @@ class _ScreenSharePageState extends State<ScreenSharePage> {
                   const BorderRadius.horizontal(right: Radius.circular(14)),
               onTap: () => setState(() => membersCollapsed = true),
               child: const SizedBox(
-                  width: 15,
+                  width: 20,
                   height: 32,
                   child: Icon(Icons.chevron_right,
-                      size: 15, color: Color(0xFF94A3B8))),
+                      size: 16, color: Color(0xFF94A3B8))),
             ),
           ),
         ),
